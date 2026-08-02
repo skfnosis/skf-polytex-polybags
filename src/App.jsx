@@ -8,6 +8,10 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import { supabase } from './supabaseClient.js';
+import logoSkfPolytex from './assets/logo-skf-polytex.png';
+import logoSkfPolybags from './assets/logo-skf-polybags.png';
+
+const BRAND_LOGOS = { skf_polytex: logoSkfPolytex, skf_polybags: logoSkfPolybags };
 
 /* ============================================================================
  * SKF PolyTex / SKF PolyBags — Trading & Accounting App (web)
@@ -550,9 +554,12 @@ function BrandTabs({ brands, value, onChange, allowAll = false }) {
           key={b.brand_key}
           type="button"
           onClick={() => onChange(b)}
-          className="px-3 py-1.5 rounded-md text-sm font-medium transition"
+          className="px-3 py-1.5 rounded-md text-sm font-medium transition inline-flex items-center gap-1.5"
           style={value?.brand_key === b.brand_key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
         >
+          {BRAND_LOGOS[b.brand_key] && (
+            <img src={BRAND_LOGOS[b.brand_key]} alt="" className="w-4 h-4 object-contain" />
+          )}
           {b.display_name}
         </button>
       ))}
@@ -564,16 +571,37 @@ function BrandTabs({ brands, value, onChange, allowAll = false }) {
 // EXPORT — one PDF/Excel exporter reused by every report screen.
 // ============================================================================
 
-function exportPdf({ title, brandLabel, columns, rows, totalsRow }) {
+async function loadImageAsDataUrl(src) {
+  const res = await fetch(src);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function exportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow }) {
   const doc = new jsPDF();
+  let textX = 14;
+  if (brandLogo) {
+    try {
+      const dataUrl = await loadImageAsDataUrl(brandLogo);
+      doc.addImage(dataUrl, 'PNG', 14, 8, 16, 16);
+      textX = 34;
+    } catch {
+      // fall back to text-only header if the logo can't be loaded
+    }
+  }
   doc.setFontSize(14);
-  doc.text(brandLabel || 'SKF PolyTex / SKF PolyBags', 14, 16);
+  doc.text(brandLabel || 'SKF PolyTex / SKF PolyBags', textX, 16);
   doc.setFontSize(10);
   doc.setTextColor(120);
-  doc.text(title, 14, 23);
+  doc.text(title, textX, 23);
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
   autoTable(doc, {
-    startY: 30,
+    startY: brandLogo ? 32 : 30,
     head: [columns],
     body: rows,
     foot: totalsRow ? [totalsRow] : undefined,
@@ -605,7 +633,7 @@ function ReportFilterBar({ from, to, onFromChange, onToChange, children }) {
   );
 }
 
-function ReportTable({ title, brandLabel, columns, rows, totalsRow }) {
+function ReportTable({ title, brandLabel, brandLogo, columns, rows, totalsRow }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
@@ -615,7 +643,7 @@ function ReportTable({ title, brandLabel, columns, rows, totalsRow }) {
             variant="outline"
             icon={FileDown}
             disabled={rows.length === 0}
-            onClick={() => exportPdf({ title, brandLabel, columns, rows, totalsRow })}
+            onClick={() => exportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow })}
           >
             PDF
           </Button>
@@ -750,8 +778,9 @@ function LoginScreen() {
     <div className="min-h-screen flex items-center justify-center p-6">
       <form onSubmit={submit} className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-8 text-center">
-          <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-3" style={{ backgroundColor: THEME.blue }}>
-            <ShieldCheck className="text-white" size={24} />
+          <div className="flex items-center gap-3 mb-3">
+            <img src={logoSkfPolytex} alt="SKF PolyTex" className="h-14 w-14 object-contain" />
+            <img src={logoSkfPolybags} alt="SKF PolyBags" className="h-14 w-14 object-contain" />
           </div>
           <h1 className="font-display font-bold text-xl">SKF PolyTex &middot; SKF PolyBags</h1>
           <p className="text-sm text-gray-500 mt-1">Sign in to the ERP</p>
@@ -1443,6 +1472,7 @@ function InvoiceReport({ invoiceType, from, to, brand }) {
     <ReportTable
       title={invoiceType === 'sale' ? 'Sale Report' : 'Purchase Report'}
       brandLabel={brand?.display_name}
+      brandLogo={brand?.brand_key ? BRAND_LOGOS[brand.brand_key] : null}
       columns={['Invoice #', 'Date', 'Party', 'Brand', 'Amount', 'Status']}
       rows={table}
       totalsRow={['', '', '', 'Total', formatPkr(total), '']}
@@ -1493,7 +1523,13 @@ function LedgerReport({ from, to, brand }) {
   ]);
 
   return (
-    <ReportTable title="General Ledger" brandLabel={brand?.display_name} columns={['Date', 'Account', 'Party', 'Debit', 'Credit']} rows={table} />
+    <ReportTable
+      title="General Ledger"
+      brandLabel={brand?.display_name}
+      brandLogo={brand?.brand_key ? BRAND_LOGOS[brand.brand_key] : null}
+      columns={['Date', 'Account', 'Party', 'Debit', 'Credit']}
+      rows={table}
+    />
   );
 }
 
