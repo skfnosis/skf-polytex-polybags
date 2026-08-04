@@ -2,8 +2,10 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, createContext
 import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
-  ArrowUpRight, ArrowDownRight, ShieldCheck, Menu,
+  ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
+  Package, Percent,
 } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
@@ -31,6 +33,8 @@ const THEME = {
   success: '#1E9E6A',
   danger: '#D64545',
   amber: '#C98A1E',
+  cashGreen: '#0F6B41',
+  emerald: '#10B981',
   navBg: '#FFFFFF',
   navTextMuted: '#8A8F9C',
 };
@@ -192,6 +196,87 @@ async function fetchInvoiceWithItems(invoiceId) {
     .select('*, items(name)').eq('invoice_id', invoiceId);
   if (itemsError) throw itemsError;
   return { invoice, items };
+}
+
+async function fetchAppSettings() {
+  const { data, error } = await supabase.from('app_settings').select().eq('id', 1).maybeSingle();
+  if (error) throw error;
+  return data || { low_cash_threshold: 0, high_payables_threshold: 0 };
+}
+
+async function updateAppSettings({ lowCashThreshold, highPayablesThreshold }) {
+  const { error } = await supabase.from('app_settings')
+    .update({ low_cash_threshold: lowCashThreshold, high_payables_threshold: highPayablesThreshold, updated_at: new Date().toISOString() })
+    .eq('id', 1);
+  if (error) throw error;
+}
+
+async function fetchCashBankBalances() {
+  const { data: accounts, error } = await supabase.from('chart_of_accounts').select().eq('type', 'cash_bank');
+  if (error) throw error;
+  const { data: balances, error: balError } = await supabase.from('v_trial_balance').select();
+  if (balError) throw balError;
+  const balanceByAccount = {};
+  (balances || []).forEach((b) => { balanceByAccount[b.account_id] = b.balance; });
+  return accounts.map((a) => ({ ...a, balance: balanceByAccount[a.id] || 0 }));
+}
+
+async function fetchCashFlow({ from, to }) {
+  const { data, error } = await supabase.rpc('dashboard_cashflow', { p_from: from, p_to: to });
+  if (error) throw error;
+  return data?.[0] || { cash_in: 0, cash_out: 0 };
+}
+
+async function fetchSalesOverview({ from, to }) {
+  const { data, error } = await supabase.rpc('dashboard_sales_overview', { p_from: from, p_to: to });
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchTopCustomers({ from, to }) {
+  const { data, error } = await supabase.rpc('dashboard_top_customers', { p_from: from, p_to: to });
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchMonthlyProfit({ from, to }) {
+  const { data, error } = await supabase.rpc('dashboard_monthly_profit', { p_from: from, p_to: to });
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchReceivablesOverdue() {
+  const { data, error } = await supabase.rpc('dashboard_receivables_overdue');
+  if (error) throw error;
+  return data?.[0] || { total_receivables: 0, overdue_receivables: 0 };
+}
+
+async function fetchPartyBalances({ type, positiveOnly = false } = {}) {
+  let q = supabase.from('v_party_balances').select().eq('type', type);
+  const { data, error } = await q.order('balance', { ascending: false });
+  if (error) throw error;
+  return positiveOnly ? (data || []).filter((r) => r.balance > 0) : (data || []);
+}
+
+async function fetchStockWithValue() {
+  const [{ data: stock, error: e1 }, { data: items, error: e2 }] = await Promise.all([
+    supabase.from('v_stock_balance').select(),
+    supabase.from('items').select('id, manual_stock_value'),
+  ]);
+  if (e1) throw e1;
+  if (e2) throw e2;
+  const valueById = {};
+  (items || []).forEach((i) => { valueById[i.id] = i.manual_stock_value; });
+  return (stock || []).map((s) => ({ ...s, manual_stock_value: valueById[s.item_id] }));
+}
+
+async function fetchPaymentsSummary({ from, to }) {
+  const { data, error } = await supabase.from('payments').select('amount, direction')
+    .eq('status', 'posted').gte('payment_date', from).lte('payment_date', to);
+  if (error) throw error;
+  const received = (data || []).filter((p) => p.direction === 'receipt').reduce((s, p) => s + Number(p.amount), 0);
+  const made = (data || []).filter((p) => p.direction === 'payment').reduce((s, p) => s + Number(p.amount), 0);
+  return { received, made };
 }
 
 async function fetchDashboardSummary({ from, to, brandKey }) {
@@ -1154,58 +1239,404 @@ function PageRouter({ page }) {
 // DASHBOARD
 // ============================================================================
 
+// ============================================================================
+// DASHBOARD — see the module doc comment in PurchaseModule's section for the
+// project's general design conventions. This screen answers, at a glance:
+// where is my cash, how much am I making per brand, who hasn't paid me, and
+// is money moving fast enough. Every section below maps 1:1 to a numbered
+// section in the brief. Sections that depend on data the schema doesn't
+// track precisely (overdue aging, stock value) are called out inline.
+// ============================================================================
+
+function SectionHeading({ children }) {
+  return <h3 className="font-display font-semibold text-sm text-gray-500 uppercase tracking-wide mt-8 mb-3 first:mt-0">{children}</h3>;
+}
+
+function StatCard({ title, icon: Icon, color, value, sub, onClick, emphasize, highlight }) {
+  const Wrapper = onClick ? 'button' : 'div';
+  return (
+    <Wrapper onClick={onClick} className={cx('text-left w-full block', onClick && 'cursor-pointer')}>
+      <Card
+        className={cx('p-4 h-full', onClick && 'hover:shadow-md transition')}
+        style={highlight ? { borderColor: THEME.danger, backgroundColor: '#FBEAEA' } : undefined}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-medium text-gray-500">{title}</span>
+          {Icon && <Icon size={16} style={{ color }} />}
+        </div>
+        <div className={cx('font-bold', emphasize ? 'text-2xl' : 'text-xl')} style={{ color }}>
+          {value}
+        </div>
+        {sub && <div className="text-xs text-gray-500 mt-1.5 leading-relaxed">{sub}</div>}
+      </Card>
+    </Wrapper>
+  );
+}
+
+function AccountListModal({ open, onClose, title, rows, renderRow }) {
+  return (
+    <Modal open={open} onClose={onClose} title={title} width={480}>
+      {rows === null ? (
+        <div className="py-10 flex justify-center"><Spinner /></div>
+      ) : rows.length === 0 ? (
+        <EmptyState>Nothing to show.</EmptyState>
+      ) : (
+        <div className="divide-y" style={{ borderColor: THEME.line }}>
+          {rows.map(renderRow)}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+const MONTHLY_PROFIT_TOGGLES = [
+  { key: 'total', label: 'Total Profit' },
+  { key: 'skf_polytex', label: 'Fabric (PolyTex)' },
+  { key: 'skf_polybags', label: 'Poly Bags' },
+];
+
 function DashboardScreen() {
   const [from, setFrom] = useState(toDateInput(startOfMonth()));
   const [to, setTo] = useState(toDateInput(new Date()));
   const [brand, setBrand] = useState(null);
   const [brands, setBrands] = useState([]);
-  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const [summary, setSummary] = useState(null);
+  const [fabricProfit, setFabricProfit] = useState(null);
+  const [polybagsProfit, setPolybagsProfit] = useState(null);
+  const [cashBank, setCashBank] = useState([]);
+  const [cashFlow, setCashFlow] = useState(null);
+  const [todaySummary, setTodaySummary] = useState(null);
+  const [todayCashIn, setTodayCashIn] = useState(0);
+  const [salesOverview, setSalesOverview] = useState([]);
+  const [paymentsSummary, setPaymentsSummary] = useState({ received: 0, made: 0 });
+  const [receivables, setReceivables] = useState({ total_receivables: 0, overdue_receivables: 0 });
+  const [payables, setPayables] = useState([]);
+  const [customerBalances, setCustomerBalances] = useState([]);
+  const [topDebtors, setTopDebtors] = useState([]);
+  const [topCustomers, setTopCustomers] = useState([]);
+  const [monthlyProfit, setMonthlyProfit] = useState([]);
+  const [profitToggle, setProfitToggle] = useState('total');
+  const [stock, setStock] = useState([]);
+  const [appSettings, setAppSettings] = useState({ low_cash_threshold: 0, high_payables_threshold: 0 });
+
+  const [cashBankModalKind, setCashBankModalKind] = useState(null); // 'cash' | 'bank' | null
+  const [receivablesModalOpen, setReceivablesModalOpen] = useState(false);
+  const [payablesModalOpen, setPayablesModalOpen] = useState(false);
+  const [stockModalOpen, setStockModalOpen] = useState(false);
 
   useEffect(() => { fetchBrands().then(setBrands); }, []);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    fetchDashboardSummary({ from, to, brandKey: brand?.brand_key })
-      .then((s) => { if (alive) setSummary(s); })
-      .finally(() => { if (alive) setLoading(false); });
+    const today = toDateInput(new Date());
+    const graphFrom = toDateInput(new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1));
+    Promise.all([
+      fetchDashboardSummary({ from, to, brandKey: brand?.brand_key }),
+      fetchDashboardSummary({ from, to, brandKey: 'skf_polytex' }),
+      fetchDashboardSummary({ from, to, brandKey: 'skf_polybags' }),
+      fetchCashBankBalances(),
+      fetchCashFlow({ from, to }),
+      fetchDashboardSummary({ from: today, to: today }),
+      fetchCashFlow({ from: today, to: today }),
+      fetchSalesOverview({ from, to }),
+      fetchPaymentsSummary({ from, to }),
+      fetchReceivablesOverdue(),
+      fetchPartyBalances({ type: 'supplier' }),
+      fetchPartyBalances({ type: 'customer', positiveOnly: true }),
+      fetchTopCustomers({ from, to }),
+      fetchMonthlyProfit({ from: graphFrom, to: today }),
+      fetchStockWithValue(),
+      fetchAppSettings(),
+    ]).then(([s, fp, pp, cb, cf, ts, tcf, so, ps, rec, pay, debtors, customers, mp, sk, settings]) => {
+      if (!alive) return;
+      setSummary(s); setFabricProfit(fp); setPolybagsProfit(pp);
+      setCashBank(cb); setCashFlow(cf); setTodaySummary(ts); setTodayCashIn(tcf.cash_in);
+      setSalesOverview(so); setPaymentsSummary(ps); setReceivables(rec);
+      setPayables(pay.filter((p) => p.balance < 0));
+      setCustomerBalances(debtors); setTopDebtors(debtors.slice(0, 5)); setTopCustomers(customers);
+      setMonthlyProfit(mp); setStock(sk); setAppSettings(settings);
+    }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [from, to, brand]);
 
-  const cards = summary
-    ? [
-        { label: 'Sales', value: summary.sales, color: THEME.success, icon: ArrowUpRight },
-        { label: 'Purchase', value: summary.purchase, color: THEME.danger, icon: ArrowDownRight },
-        { label: 'Expenses', value: summary.expenses, color: THEME.amber, icon: ArrowDownRight },
-        { label: 'Profit', value: summary.profit, color: summary.profit >= 0 ? THEME.success : THEME.danger, icon: ArrowUpRight, emphasize: true },
-      ]
-    : [];
+  if (loading && !summary) {
+    return <div className="py-20 flex justify-center"><Spinner /></div>;
+  }
+
+  const cashTotal = cashBank.filter((a) => a.cash_bank_kind === 'cash').reduce((s, a) => s + Number(a.balance), 0);
+  const bankTotal = cashBank.filter((a) => a.cash_bank_kind === 'bank').reduce((s, a) => s + Number(a.balance), 0);
+  const payablesTotal = payables.reduce((s, p) => s - Number(p.balance), 0);
+  const salesTotal = salesOverview.reduce((s, r) => s + Number(r.amount), 0);
+  const pendingAmount = salesTotal - paymentsSummary.received;
+  const fabricMarginPct = fabricProfit && fabricProfit.sales > 0
+    ? ((fabricProfit.sales - fabricProfit.purchase) / fabricProfit.sales) * 100 : 0;
+  const polybagsMarginPct = polybagsProfit && polybagsProfit.sales > 0
+    ? ((polybagsProfit.sales - polybagsProfit.purchase) / polybagsProfit.sales) * 100 : 0;
+
+  const fabricStock = stock.filter((s) => s.category === 'fabric');
+  const polybagsStock = stock.filter((s) => s.category === 'polybags');
+  const stockValueTotal = stock.reduce((s, r) => s + (Number(r.manual_stock_value) || 0), 0);
+
+  const monthLabels = [...new Set(monthlyProfit.map((r) => r.month))];
+  const graphData = monthLabels.map((month) => {
+    const rows = monthlyProfit.filter((r) => r.month === month);
+    const totalProfit = rows.reduce((s, r) => s + (Number(r.sales) - Number(r.purchase) - Number(r.expenses)), 0);
+    const byBrand = {};
+    rows.forEach((r) => { byBrand[r.brand_key] = Number(r.sales) - Number(r.purchase) - Number(r.expenses); });
+    return {
+      month: new Date(month).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
+      total: totalProfit,
+      skf_polytex: byBrand.skf_polytex || 0,
+      skf_polybags: byBrand.skf_polybags || 0,
+    };
+  });
+
+  const alerts = [];
+  if (receivables.overdue_receivables > 0) {
+    alerts.push({ text: `${formatPkr(receivables.overdue_receivables)} in overdue receivables (30+ days).`, key: 'overdue' });
+  }
+  if (cashTotal + bankTotal < Number(appSettings.low_cash_threshold)) {
+    alerts.push({ text: `Cash + Bank (${formatPkr(cashTotal + bankTotal)}) is below your low-cash threshold of ${formatPkr(appSettings.low_cash_threshold)}.`, key: 'lowcash' });
+  }
+  if (payablesTotal > Number(appSettings.high_payables_threshold) && appSettings.high_payables_threshold > 0) {
+    alerts.push({ text: `Payables (${formatPkr(payablesTotal)}) are above your high-payables threshold of ${formatPkr(appSettings.high_payables_threshold)}.`, key: 'payables' });
+  }
 
   return (
     <div>
-      <div className="flex flex-wrap items-end gap-4 mb-6">
+      <div className="flex flex-wrap items-end gap-4 mb-2">
         <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
         <BrandTabs brands={brands} value={brand} onChange={setBrand} allowAll />
       </div>
 
-      {loading ? (
-        <div className="py-20 flex justify-center"><Spinner /></div>
-      ) : (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {cards.map((c) => (
-            <Card key={c.label} className="p-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-500">{c.label}</span>
-                <c.icon size={16} style={{ color: c.color }} />
-              </div>
-              <div className={cx('font-bold', c.emphasize ? 'text-2xl' : 'text-xl')} style={{ color: c.color }}>
-                {formatPkr(c.value)}
-              </div>
-            </Card>
+      {alerts.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {alerts.map((a) => (
+            <div key={a.key} className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm" style={{ backgroundColor: '#FBEAEA', color: THEME.danger }}>
+              <AlertTriangle size={16} className="flex-shrink-0" />
+              {a.text}
+            </div>
           ))}
         </div>
       )}
+
+      <SectionHeading>Cash &amp; Bank</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard title="Cash in Hand" icon={Wallet} color={THEME.cashGreen} value={formatPkr(cashTotal)}
+          onClick={() => setCashBankModalKind('cash')} sub="Tap for account-wise breakdown" />
+        <StatCard title="Bank Balance" icon={Landmark} color={THEME.cashGreen} value={formatPkr(bankTotal)}
+          onClick={() => setCashBankModalKind('bank')} sub="Tap for account-wise breakdown" />
+      </div>
+
+      <SectionHeading>Cash Flow Summary</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard title="Total Cash In (Receipts)" icon={ArrowUpRight} color={THEME.success} value={formatPkr(cashFlow?.cash_in || 0)} />
+        <StatCard title="Total Cash Out" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(cashFlow?.cash_out || 0)} sub="Payments + Expenses" />
+      </div>
+
+      <SectionHeading>Today&apos;s Snapshot</SectionHeading>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Today Sales" icon={ArrowUpRight} color={THEME.success} value={formatPkr(todaySummary?.sales || 0)} />
+        <StatCard title="Today Profit" icon={ArrowUpRight} color={THEME.emerald} value={formatPkr(todaySummary?.profit || 0)} />
+        <StatCard title="Today Expenses" icon={ArrowDownRight} color={THEME.amber} value={formatPkr(todaySummary?.expenses || 0)} />
+        <StatCard title="Today Cash Received" icon={Wallet} color={THEME.cashGreen} value={formatPkr(todayCashIn)} />
+      </div>
+
+      <SectionHeading>Sales Overview</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        {['polybags', 'fabric'].map((cat) => {
+          const row = salesOverview.find((r) => r.category === cat) || { quantity: 0, amount: 0 };
+          return (
+            <StatCard
+              key={cat}
+              title={cat === 'polybags' ? 'Polybags Sales' : 'Fabric Sales'}
+              icon={ShoppingCart} color={THEME.success}
+              value={formatPkr(row.amount)}
+              sub={`${Number(row.quantity).toLocaleString()} ${cat === 'polybags' ? 'units' : 'kg / meters'}`}
+            />
+          );
+        })}
+      </div>
+
+      <SectionHeading>Payments</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard title="Payments Received" icon={ArrowUpRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
+        <StatCard title="Payments Made" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(paymentsSummary.made)} />
+      </div>
+
+      <SectionHeading>Receivables</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard title="Total Receivables" icon={Users} color={THEME.blue} value={formatPkr(receivables.total_receivables)}
+          onClick={() => setReceivablesModalOpen(true)} sub="Tap for customer-wise balances" />
+        <StatCard title="Overdue Receivables" icon={AlertTriangle} color={THEME.danger} value={formatPkr(receivables.overdue_receivables)}
+          highlight={receivables.overdue_receivables > 0} sub="30+ days unpaid (approximate)" />
+      </div>
+
+      <SectionHeading>Payables</SectionHeading>
+      <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
+        onClick={() => setPayablesModalOpen(true)} sub="Tap for vendor-wise balances" />
+
+      <SectionHeading>Expenses</SectionHeading>
+      <StatCard title="Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(summary?.expenses || 0)} />
+
+      <SectionHeading>Profit</SectionHeading>
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard
+          title="Fabric Profit (PolyTex)" icon={ArrowUpRight} color={THEME.emerald}
+          value={formatPkr((fabricProfit?.sales || 0) - (fabricProfit?.purchase || 0))}
+          sub={`Gross margin ${fabricMarginPct.toFixed(1)}%`}
+        />
+        <StatCard
+          title="Poly Bags Profit" icon={ArrowUpRight} color={THEME.emerald}
+          value={formatPkr((polybagsProfit?.sales || 0) - (polybagsProfit?.purchase || 0))}
+          sub={`Gross margin ${polybagsMarginPct.toFixed(1)}%`}
+        />
+        <StatCard
+          title="Total Net Profit" icon={ArrowUpRight} color={summary?.profit >= 0 ? THEME.emerald : THEME.danger}
+          value={formatPkr(summary?.profit || 0)} emphasize sub="After all expenses"
+        />
+      </div>
+
+      <SectionHeading>Profit Trend</SectionHeading>
+      <Card className="p-4" style={{ borderColor: THEME.line }}>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {MONTHLY_PROFIT_TOGGLES.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setProfitToggle(t.key)}
+              className="px-3 py-1.5 rounded-full text-xs font-medium border"
+              style={profitToggle === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ width: '100%', height: 260 }}>
+          <ResponsiveContainer>
+            <LineChart data={graphData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={THEME.line} />
+              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+              <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatPkr(v)} width={80} />
+              <Tooltip formatter={(v) => formatPkr(v)} />
+              <Legend />
+              <Line type="monotone" dataKey={profitToggle} name={MONTHLY_PROFIT_TOGGLES.find((t) => t.key === profitToggle).label} stroke={THEME.emerald} strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <SectionHeading>Stock</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard
+          title="Current Stock" icon={Package} color={THEME.blue}
+          value={`${stock.reduce((s, r) => s + Number(r.qty_on_hand), 0).toLocaleString()} units`}
+          onClick={() => setStockModalOpen(true)} sub="Tap for Polybags / Fabric split"
+        />
+        <StatCard
+          title="Stock Value" icon={Package} color={THEME.blue}
+          value={formatPkr(stockValueTotal)}
+          sub="Manually set per item, not auto-valued"
+        />
+      </div>
+
+      <SectionHeading>Top Debtors</SectionHeading>
+      {topDebtors.length === 0 ? (
+        <EmptyState>No customers currently owe money.</EmptyState>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {topDebtors.map((d) => (
+            <div key={d.party_id} className="flex items-center justify-between px-4 py-3">
+              <span className="text-sm font-medium">{d.name}</span>
+              <span className="text-sm font-semibold" style={{ color: THEME.danger }}>{formatPkr(d.balance)}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <SectionHeading>Top Customers</SectionHeading>
+      {topCustomers.length === 0 ? (
+        <EmptyState>No sales in this range.</EmptyState>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {topCustomers.map((c) => (
+            <div key={c.party_id} className="flex items-center justify-between px-4 py-3">
+              <span className="text-sm font-medium">{c.name}</span>
+              <span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(c.total_sales)}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <SectionHeading>Sales vs Recovery</SectionHeading>
+      <div className="grid grid-cols-3 gap-4">
+        <StatCard title="Total Sales" icon={ShoppingCart} color={THEME.success} value={formatPkr(salesTotal)} />
+        <StatCard title="Total Received" icon={ArrowUpRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
+        <StatCard title="Pending Amount" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(Math.max(pendingAmount, 0))} />
+      </div>
+
+      <AccountListModal
+        open={!!cashBankModalKind}
+        onClose={() => setCashBankModalKind(null)}
+        title={cashBankModalKind === 'cash' ? 'Cash accounts' : 'Bank accounts'}
+        rows={cashBank.filter((a) => a.cash_bank_kind === cashBankModalKind)}
+        renderRow={(a) => (
+          <div key={a.id} className="flex items-center justify-between px-1 py-3">
+            <span className="text-sm">{a.name}</span>
+            <span className="text-sm font-semibold" style={{ color: THEME.cashGreen }}>{formatPkr(a.balance)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={receivablesModalOpen}
+        onClose={() => setReceivablesModalOpen(false)}
+        title="Customer-wise receivables"
+        rows={customerBalances}
+        renderRow={(d) => (
+          <div key={d.party_id} className="flex items-center justify-between px-1 py-3">
+            <span className="text-sm">{d.name}</span>
+            <span className="text-sm font-semibold" style={{ color: THEME.blue }}>{formatPkr(d.balance)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={payablesModalOpen}
+        onClose={() => setPayablesModalOpen(false)}
+        title="Vendor-wise payables"
+        rows={payables}
+        renderRow={(p) => (
+          <div key={p.party_id} className="flex items-center justify-between px-1 py-3">
+            <span className="text-sm">{p.name}</span>
+            <span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(-p.balance)}</span>
+          </div>
+        )}
+      />
+
+      <Modal open={stockModalOpen} onClose={() => setStockModalOpen(false)} title="Stock by category" width={480}>
+        <div className="space-y-4">
+          {[{ label: 'Polybags stock', rows: polybagsStock }, { label: 'Fabric stock', rows: fabricStock }].map((g) => (
+            <div key={g.label}>
+              <div className="text-sm font-medium text-gray-700 mb-2">{g.label}</div>
+              {g.rows.length === 0 ? (
+                <p className="text-xs text-gray-500">No items yet.</p>
+              ) : (
+                <div className="divide-y" style={{ borderColor: THEME.line }}>
+                  {g.rows.map((r) => (
+                    <div key={r.item_id} className="flex items-center justify-between py-2 text-sm">
+                      <span>{r.name}</span>
+                      <span className="text-gray-500">{Number(r.qty_on_hand).toLocaleString()} {r.default_unit}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -2507,7 +2938,58 @@ function SettingsScreen() {
           </Card>
         </button>
       )}
+
+      {profile?.is_admin && <DashboardAlertSettings />}
     </div>
+  );
+}
+
+function DashboardAlertSettings() {
+  const [lowCash, setLowCash] = useState('0');
+  const [highPayables, setHighPayables] = useState('0');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    fetchAppSettings().then((s) => {
+      setLowCash(String(s.low_cash_threshold ?? 0));
+      setHighPayables(String(s.high_payables_threshold ?? 0));
+    }).finally(() => setLoading(false));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await updateAppSettings({ lowCashThreshold: Number(lowCash) || 0, highPayablesThreshold: Number(highPayables) || 0 });
+      show('Alert thresholds saved.');
+    } catch (e) {
+      show(`Could not save: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-3 mb-3">
+        <AlertTriangle size={20} style={{ color: THEME.danger }} />
+        <div>
+          <div className="font-medium">Dashboard alerts</div>
+          <div className="text-xs text-gray-500">Trigger points for Low Cash Warning and High Payables Alert</div>
+        </div>
+      </div>
+      {loading ? (
+        <div className="py-6 flex justify-center"><Spinner /></div>
+      ) : (
+        <div className="space-y-3">
+          <Input label="Low cash threshold (PKR)" type="number" value={lowCash} onChange={(e) => setLowCash(e.target.value)} />
+          <Input label="High payables threshold (PKR)" type="number" value={highPayables} onChange={(e) => setHighPayables(e.target.value)} />
+          <Button onClick={save} loading={saving}>Save thresholds</Button>
+        </div>
+      )}
+      <ToastHost />
+    </Card>
   );
 }
 
