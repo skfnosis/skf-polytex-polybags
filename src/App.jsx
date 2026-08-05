@@ -1027,6 +1027,7 @@ function AuthProvider({ children }) {
   // THAT session has actually finished (success or failure) — AppInner blocks on
   // this so it never judges "no pages enabled" from the empty initial state.
   const [permissionsReady, setPermissionsReady] = useState(false);
+  const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -1038,11 +1039,13 @@ function AuthProvider({ children }) {
     if (!session) {
       setProfile(null);
       setPermissions({});
+      setAuthError(null);
       setPermissionsReady(true); // signed out: nothing to wait for, LoginScreen renders
       return;
     }
     let alive = true;
     setPermissionsReady(false);
+    setAuthError(null);
     fetchProfile(session.user.id)
       .then(async (p) => {
         if (!alive) return;
@@ -1050,10 +1053,13 @@ function AuthProvider({ children }) {
         if (p) {
           const grid = await fetchPermissions(p.id, p.is_admin);
           if (alive) setPermissions(grid);
+        } else {
+          setAuthError('No profile row exists for this account (profiles table). Contact an admin.');
         }
       })
       .catch((e) => {
         console.error('Failed to load profile/permissions:', e);
+        if (alive) setAuthError(e.message || String(e));
       })
       .finally(() => { if (alive) setPermissionsReady(true); });
     return () => { alive = false; };
@@ -1070,6 +1076,7 @@ function AuthProvider({ children }) {
     permissions,
     visiblePages,
     permissionsReady,
+    authError,
     signOut: () => supabase.auth.signOut(),
   };
 
@@ -1126,7 +1133,7 @@ function LoginScreen() {
 // ============================================================================
 
 function AppShell() {
-  const { profile, visiblePages, signOut } = useAuth();
+  const { profile, visiblePages, signOut, authError } = useAuth();
   const [current, setCurrent] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -1143,7 +1150,14 @@ function AppShell() {
       <div className="min-h-screen flex flex-col">
         <TopBar profile={profile} onSignOut={signOut} pageLabel="" />
         <div className="flex-1 flex items-center justify-center text-center p-6 text-gray-500 text-sm">
-          Your account has no pages enabled yet.<br />Ask an admin to grant access under Settings.
+          {authError ? (
+            <div>
+              <p className="font-medium mb-2" style={{ color: THEME.danger }}>Could not load your account.</p>
+              <p className="text-xs bg-gray-100 rounded-lg px-3 py-2 inline-block max-w-md break-words">{authError}</p>
+            </div>
+          ) : (
+            <p>Your account has no pages enabled yet.<br />Ask an admin to grant access under Settings.</p>
+          )}
         </div>
       </div>
     );
