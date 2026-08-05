@@ -1023,7 +1023,10 @@ function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined); // undefined = not checked yet
   const [profile, setProfile] = useState(null);
   const [permissions, setPermissions] = useState({});
-  const [loadingProfile, setLoadingProfile] = useState(false);
+  // False the instant a session appears, true only once the permissions fetch for
+  // THAT session has actually finished (success or failure) — AppInner blocks on
+  // this so it never judges "no pages enabled" from the empty initial state.
+  const [permissionsReady, setPermissionsReady] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -1035,10 +1038,11 @@ function AuthProvider({ children }) {
     if (!session) {
       setProfile(null);
       setPermissions({});
+      setPermissionsReady(true); // signed out: nothing to wait for, LoginScreen renders
       return;
     }
     let alive = true;
-    setLoadingProfile(true);
+    setPermissionsReady(false);
     fetchProfile(session.user.id)
       .then(async (p) => {
         if (!alive) return;
@@ -1048,7 +1052,10 @@ function AuthProvider({ children }) {
           if (alive) setPermissions(grid);
         }
       })
-      .finally(() => { if (alive) setLoadingProfile(false); });
+      .catch((e) => {
+        console.error('Failed to load profile/permissions:', e);
+      })
+      .finally(() => { if (alive) setPermissionsReady(true); });
     return () => { alive = false; };
   }, [session]);
 
@@ -1062,7 +1069,7 @@ function AuthProvider({ children }) {
     profile,
     permissions,
     visiblePages,
-    loadingProfile,
+    permissionsReady,
     signOut: () => supabase.auth.signOut(),
   };
 
@@ -3099,8 +3106,8 @@ function PermissionsScreen({ onBack }) {
 // ============================================================================
 
 function AppInner() {
-  const { session } = useAuth();
-  if (session === undefined) {
+  const { session, permissionsReady } = useAuth();
+  if (session === undefined || (session && !permissionsReady)) {
     return <div className="min-h-screen flex items-center justify-center"><Spinner size={28} /></div>;
   }
   return session ? <AppShell /> : <LoginScreen />;
