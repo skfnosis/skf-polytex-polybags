@@ -41,8 +41,8 @@ const THEME = {
 
 const PAGES = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { key: 'entry_sale', label: 'Sale Invoice', icon: ShoppingCart },
-  { key: 'entry_purchase', label: 'Purchase Invoice', icon: ClipboardList },
+  { key: 'entry_sale', label: 'Sales', icon: ShoppingCart },
+  { key: 'entry_purchase', label: 'Purchase', icon: ClipboardList },
   { key: 'entry_expense', label: 'Expense', icon: Receipt },
   { key: 'reports', label: 'Reports', icon: BarChart3 },
   { key: 'party_master', label: 'Party Master', icon: Users },
@@ -79,12 +79,7 @@ function cx(...parts) {
   return parts.filter(Boolean).join(' ');
 }
 
-// Unit choices per category, per the brief: fabric -> meters/kg, poly bags -> pieces/kg.
-function unitOptionsFor(category) {
-  return category === 'fabric' ? ['meters', 'kg'] : ['pieces', 'kg'];
-}
-
-// Purchase module units: fabric -> rolls, poly bags -> bags, kg as the common alternate.
+// Purchase/Sales module units: fabric -> rolls, poly bags -> bags, kg as the common alternate.
 function purchaseUnitOptionsFor(category) {
   return category === 'fabric' ? ['rolls', 'kg', 'meters'] : ['bags', 'kg', 'pieces'];
 }
@@ -189,6 +184,20 @@ async function fetchOpenPurchaseOrders(partyId) {
   return data;
 }
 
+async function fetchOpenSaleOrders(partyId) {
+  const { data, error } = await supabase.from('invoices').select('*, parties(name)')
+    .eq('invoice_type', 'sale_order').eq('status', 'posted').eq('party_id', partyId)
+    .order('invoice_date', { ascending: false }).limit(20);
+  if (error) throw error;
+  return data;
+}
+
+async function fetchStockBalance() {
+  const { data, error } = await supabase.from('v_stock_balance').select('item_id, qty_on_hand');
+  if (error) throw error;
+  return data || [];
+}
+
 async function fetchInvoiceWithItems(invoiceId) {
   const { data: invoice, error } = await supabase.from('invoices').select('*, parties(name)').eq('id', invoiceId).single();
   if (error) throw error;
@@ -289,7 +298,7 @@ async function fetchDashboardSummary({ from, to, brandKey }) {
 
 async function createInvoice({
   invoiceType, brandKey, category, partyId, invoiceDate, items,
-  supplierInvoiceNo, linkedOrderId, transport, loading, discount, tax,
+  supplierInvoiceNo, linkedOrderId, transport, loading, discount, tax, customerPoNo,
 }) {
   const { data, error } = await supabase.rpc('create_invoice', {
     p_invoice_type: invoiceType,
@@ -310,6 +319,7 @@ async function createInvoice({
     p_loading: Number(loading) || 0,
     p_discount: Number(discount) || 0,
     p_tax: Number(tax) || 0,
+    p_customer_po_no: customerPoNo || null,
   });
   if (error) throw error;
   return data;
@@ -1246,7 +1256,7 @@ function TopBar({ profile, onSignOut, pageLabel, onMenuClick }) {
 function PageRouter({ page }) {
   switch (page) {
     case 'dashboard': return <DashboardScreen />;
-    case 'entry_sale': return <InvoiceEntryScreen invoiceType="sale" />;
+    case 'entry_sale': return <SalesModule />;
     case 'entry_purchase': return <PurchaseModule />;
     case 'entry_expense': return <ExpenseScreen />;
     case 'reports': return <ReportsScreen />;
@@ -1658,138 +1668,6 @@ function DashboardScreen() {
           ))}
         </div>
       </Modal>
-    </div>
-  );
-}
-
-// ============================================================================
-// SALE / PURCHASE INVOICE ENTRY (shared component)
-// ============================================================================
-
-function emptyLine(unit) {
-  return { quantity: '', unit, rate: '', description: '' };
-}
-
-function InvoiceEntryScreen({ invoiceType }) {
-  const [brands, setBrands] = useState([]);
-  const [brand, setBrand] = useState(null);
-  const [party, setParty] = useState(null);
-  const [partyResetKey, setPartyResetKey] = useState(0);
-  const [date, setDate] = useState(toDateInput(new Date()));
-  const [lines, setLines] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const { show, ToastHost } = useToast();
-
-  const partyType = invoiceType === 'sale' ? 'customer' : 'supplier';
-  const title = invoiceType === 'sale' ? 'Sale Invoice' : 'Purchase Invoice';
-
-  useEffect(() => {
-    fetchBrands().then((rows) => {
-      setBrands(rows);
-      if (rows.length && !brand) setBrand(rows[0]);
-    });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function switchBrand(b) {
-    setBrand(b);
-    setLines([]);
-    setParty(null);
-    setPartyResetKey((k) => k + 1);
-  }
-
-  function addLine() {
-    setLines((ls) => [...ls, emptyLine(unitOptionsFor(brand.category)[0])]);
-  }
-  function updateLine(i, patch) {
-    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
-  }
-  function removeLine(i) {
-    setLines((ls) => ls.filter((_, idx) => idx !== i));
-  }
-
-  const total = lines.reduce((sum, l) => sum + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
-
-  async function save() {
-    if (!brand || !party || lines.length === 0) {
-      show('Pick a brand, a party, and add at least one line item.', 'danger');
-      return;
-    }
-    setSaving(true);
-    try {
-      const id = await createInvoice({
-        invoiceType, brandKey: brand.brand_key, category: brand.category,
-        partyId: party.id, invoiceDate: date, items: lines,
-      });
-      show(`Saved. Invoice ${id} created.`);
-      setLines([]);
-      setParty(null);
-      setPartyResetKey((k) => k + 1);
-    } catch (e) {
-      show(`Could not save: ${e.message}`, 'danger');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (!brand) return <div className="py-20 flex justify-center"><Spinner /></div>;
-
-  const units = unitOptionsFor(brand.category);
-
-  return (
-    <div className="max-w-4xl">
-      <h2 className="font-display font-semibold text-lg mb-4">{title}</h2>
-      <div className="flex flex-wrap items-end gap-4 mb-5">
-        <BrandTabs brands={brands} value={brand} onChange={switchBrand} />
-        <Input type="date" label="Date" value={date} onChange={(e) => setDate(e.target.value)} />
-      </div>
-
-      <div className="mb-5 max-w-md">
-        <PartyPicker type={partyType} category={brand.category} value={party} onChange={setParty} resetKey={partyResetKey} />
-      </div>
-
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-medium text-sm text-gray-700">Line items</h3>
-        <Button variant="ghost" icon={Plus} onClick={addLine}>Add line</Button>
-      </div>
-
-      {lines.length === 0 ? (
-        <Card className="p-6 text-sm text-gray-500">No line items yet — click "Add line" to start.</Card>
-      ) : (
-        <Card className="divide-y" style={{ borderColor: THEME.line }}>
-          {lines.map((l, i) => (
-            <div key={i} className="p-3 flex flex-wrap items-end gap-3">
-              <div className="flex-1 min-w-[160px]">
-                <Input label="Description" value={l.description} onChange={(e) => updateLine(i, { description: e.target.value })} />
-              </div>
-              <div className="w-24">
-                <Input label="Qty" type="number" value={l.quantity} onChange={(e) => updateLine(i, { quantity: e.target.value })} />
-              </div>
-              <div className="w-28">
-                <Select label="Unit" value={l.unit} onChange={(e) => updateLine(i, { unit: e.target.value })}>
-                  {units.map((u) => <option key={u} value={u}>{u}</option>)}
-                </Select>
-              </div>
-              <div className="w-28">
-                <Input label="Rate" type="number" value={l.rate} onChange={(e) => updateLine(i, { rate: e.target.value })} />
-              </div>
-              <div className="w-28 text-right text-sm font-medium pb-2.5">
-                {formatPkr((Number(l.quantity) || 0) * (Number(l.rate) || 0))}
-              </div>
-              <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500 pb-2.5">
-                <X size={18} />
-              </button>
-            </div>
-          ))}
-        </Card>
-      )}
-
-      <div className="flex items-center justify-end gap-2 mt-5 mb-6">
-        <span className="text-gray-500">Total:</span>
-        <span className="text-xl font-bold" style={{ color: THEME.blue }}>{formatPkr(total)}</span>
-      </div>
-
-      <Button onClick={save} loading={saving}>Save {title}</Button>
-      <ToastHost />
     </div>
   );
 }
@@ -2467,6 +2345,676 @@ function PurchaseOldList({ invoiceType }) {
       )}
 
       <PurchaseViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
+      <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
+      <ToastHost />
+    </div>
+  );
+}
+
+// ============================================================================
+// SALES MODULE — Sale Order / Sale Bill / Sale Return. Mirrors the Purchase
+// Module's structure exactly (see its doc comment for the general design
+// conventions); the differences are: party type is 'customer', the Bill's
+// reference field is the customer's own PO number (not a supplier invoice
+// number we're recording), linking is against open Sale Orders, and the Bill
+// shows a soft, non-blocking "only N in stock" warning per line — selling
+// more than what's on hand is allowed (this is a fast trading tool, not an
+// inventory gate), it just gets flagged.
+// ============================================================================
+
+const SALE_TABS = [
+  { key: 'sale_order', label: 'Sale Order' },
+  { key: 'sale', label: 'Sale Bill' },
+  { key: 'sale_return', label: 'Sale Return' },
+];
+
+function saleDocLabel(invoiceType) {
+  return invoiceType === 'sale_order' ? 'Sale Order'
+    : invoiceType === 'sale_return' ? 'Sale Return' : 'Sale Bill';
+}
+
+function SalesModule() {
+  const [tab, setTab] = useState('sale');
+  const [mode, setMode] = useState('new');
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="flex flex-wrap gap-2">
+          {SALE_TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => { setTab(t.key); setMode('new'); }}
+              className="px-3 py-1.5 rounded-full text-sm font-medium border"
+              style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+          {[{ k: 'new', l: 'New' }, { k: 'old', l: 'Old' }].map((o) => (
+            <button
+              key={o.k}
+              onClick={() => setMode(o.k)}
+              className="px-3 py-1.5 rounded-md text-sm font-medium"
+              style={mode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+            >
+              {o.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {mode === 'new'
+        ? <SaleEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} />
+        : <SaleOldList key={tab} invoiceType={tab} />}
+    </div>
+  );
+}
+
+function emptySaleLine() {
+  return { itemId: null, itemName: '', unit: '', quantity: '', rate: '' };
+}
+
+function SaleEntryForm({ invoiceType, onSavedClose }) {
+  const isBill = invoiceType === 'sale';
+  const title = saleDocLabel(invoiceType);
+
+  const [brands, setBrands] = useState([]);
+  const [brand, setBrand] = useState(null);
+  const [customer, setCustomer] = useState(null);
+  const [customerResetKey, setCustomerResetKey] = useState(0);
+  const [date, setDate] = useState(toDateInput(new Date()));
+  const [lines, setLines] = useState([emptySaleLine()]);
+  const [saving, setSaving] = useState(false);
+  const [savedNo, setSavedNo] = useState(null);
+  const { show, ToastHost } = useToast();
+
+  const [customerPoNo, setCustomerPoNo] = useState('');
+  const [soOptions, setSoOptions] = useState([]);
+  const [linkedOrder, setLinkedOrder] = useState(null);
+  const [transport, setTransport] = useState('0');
+  const [loadingCharge, setLoadingCharge] = useState('0');
+  const [discount, setDiscount] = useState('0');
+  const [tax, setTax] = useState('0');
+  const [stockMap, setStockMap] = useState({});
+
+  const dateRef = useRef(null);
+  const customerRef = useRef(null);
+  const lineRefs = useRef({});
+  function getLineRefs(i) {
+    if (!lineRefs.current[i]) {
+      lineRefs.current[i] = { item: React.createRef(), unit: React.createRef(), qty: React.createRef(), rate: React.createRef() };
+    }
+    return lineRefs.current[i];
+  }
+
+  useEffect(() => {
+    fetchBrands().then((rows) => { setBrands(rows); if (rows.length && !brand) setBrand(rows[0]); });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { dateRef.current?.focus(); }, []);
+
+  useEffect(() => {
+    if (!isBill) return;
+    let alive = true;
+    fetchStockBalance().then((rows) => {
+      if (!alive) return;
+      const map = {};
+      rows.forEach((r) => { map[r.item_id] = r; });
+      setStockMap(map);
+    });
+    return () => { alive = false; };
+  }, [isBill]);
+
+  useEffect(() => {
+    if (!isBill || !customer) { setSoOptions([]); return; }
+    let alive = true;
+    fetchOpenSaleOrders(customer.id).then((rows) => { if (alive) setSoOptions(rows); });
+    return () => { alive = false; };
+  }, [isBill, customer]);
+
+  function switchBrand(b) {
+    setBrand(b);
+    setLines([emptySaleLine()]);
+    setCustomer(null);
+    setCustomerResetKey((k) => k + 1);
+    setLinkedOrder(null);
+    lineRefs.current = {};
+  }
+
+  function addLine(focus = true) {
+    setLines((ls) => {
+      const next = [...ls, emptySaleLine()];
+      if (focus) {
+        const idx = next.length - 1;
+        requestAnimationFrame(() => getLineRefs(idx).item.current?.focus());
+      }
+      return next;
+    });
+  }
+  function updateLine(i, patch) {
+    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  }
+  function removeLine(i) {
+    setLines((ls) => (ls.length === 1 ? ls : ls.filter((_, idx) => idx !== i)));
+  }
+
+  function pickItemForLine(i, item) {
+    updateLine(i, {
+      itemId: item.id,
+      itemName: item.name,
+      unit: item.default_unit || purchaseUnitOptionsFor(brand?.category)[0],
+      rate: item.last_sale_rate != null && !lines[i].rate ? String(item.last_sale_rate) : lines[i].rate,
+    });
+  }
+
+  async function applyLinkedOrder(order) {
+    if (!order) { setLinkedOrder(null); return; }
+    try {
+      const { items } = await fetchInvoiceWithItems(order.id);
+      setLinkedOrder(order);
+      setLines(items.map((it) => ({
+        itemId: it.item_id, itemName: it.items?.name || it.description || '',
+        unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
+      })));
+    } catch (e) {
+      show(`Could not load sale order: ${e.message}`, 'danger');
+    }
+  }
+
+  const subtotal = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
+  const grandTotal = isBill
+    ? subtotal + (Number(transport) || 0) + (Number(loadingCharge) || 0) + (Number(tax) || 0) - (Number(discount) || 0)
+    : subtotal;
+
+  function resetForm() {
+    setLines([emptySaleLine()]);
+    setCustomer(null);
+    setCustomerResetKey((k) => k + 1);
+    setCustomerPoNo('');
+    setLinkedOrder(null);
+    setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
+    lineRefs.current = {};
+    requestAnimationFrame(() => dateRef.current?.focus());
+  }
+
+  async function save(closeAfter) {
+    if (!brand || !customer) { show('Pick a category and a customer.', 'danger'); return; }
+    const validLines = lines.filter((l) => l.itemId && Number(l.quantity) > 0 && Number(l.rate) >= 0);
+    if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
+    setSaving(true);
+    try {
+      const id = await createInvoice({
+        invoiceType, brandKey: brand.brand_key, category: brand.category,
+        partyId: customer.id, invoiceDate: date,
+        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName })),
+        customerPoNo: isBill ? customerPoNo : undefined,
+        linkedOrderId: isBill ? linkedOrder?.id : undefined,
+        transport: isBill ? transport : undefined,
+        loading: isBill ? loadingCharge : undefined,
+        discount: isBill ? discount : undefined,
+        tax: isBill ? tax : undefined,
+      });
+      const { invoice } = await fetchInvoiceWithItems(id);
+      show(`Saved. ${invoice.invoice_no} created.`);
+      setSavedNo(invoice.invoice_no);
+      resetForm();
+      if (isBill) fetchStockBalance().then((rows) => {
+        const map = {};
+        rows.forEach((r) => { map[r.item_id] = r; });
+        setStockMap(map);
+      });
+      if (closeAfter) onSavedClose?.();
+    } catch (e) {
+      show(`Could not save: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function draftPrint() {
+    const pseudoInvoice = {
+      invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: customer?.name },
+      invoice_type: invoiceType, customer_po_no: customerPoNo,
+      transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
+      total_amount: grandTotal,
+    };
+    const pseudoItems = lines.filter((l) => l.itemId).map((l) => ({
+      items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
+      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0),
+    }));
+    printPdfDoc(buildSaleDocPdf(pseudoInvoice, pseudoItems));
+  }
+
+  useEffect(() => {
+    function onKey(e) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(false); }
+      if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); draftPrint(); }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  if (!brand) return <div className="py-20 flex justify-center"><Spinner /></div>;
+
+  const units = purchaseUnitOptionsFor(brand.category);
+
+  function lineFields(i, line) {
+    const stockRow = stockMap[line.itemId];
+    const available = stockRow ? Number(stockRow.qty_on_hand) : null;
+    const short = isBill && line.itemId && available !== null && Number(line.quantity) > available;
+    return {
+      item: (
+        <ItemPicker
+          category={brand.category}
+          value={line.itemId ? { id: line.itemId, name: line.itemName } : null}
+          onChange={(it) => pickItemForLine(i, it)}
+          resetKey={`${i}-${line.itemId || 'empty'}`}
+          inputRef={getLineRefs(i).item}
+          onEnterNext={() => getLineRefs(i).unit.current?.focus()}
+        />
+      ),
+      unit: (
+        <Select
+          ref={getLineRefs(i).unit}
+          label="Unit"
+          value={line.unit}
+          onChange={(e) => updateLine(i, { unit: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).qty.current?.focus(); } }}
+        >
+          <option value="">—</option>
+          {units.map((u) => <option key={u} value={u}>{u}</option>)}
+        </Select>
+      ),
+      qty: (
+        <div>
+          <Input
+            ref={getLineRefs(i).qty}
+            type="number" label="Qty" value={line.quantity}
+            onChange={(e) => updateLine(i, { quantity: e.target.value })}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).rate.current?.focus(); } }}
+          />
+          {short && (
+            <p className="text-xs mt-1" style={{ color: THEME.danger }}>
+              Only {available} {line.unit || ''} in stock
+            </p>
+          )}
+        </div>
+      ),
+      rate: (
+        <Input
+          ref={getLineRefs(i).rate}
+          type="number" label="Rate" value={line.rate}
+          onChange={(e) => updateLine(i, { rate: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (i === lines.length - 1) addLine();
+              else getLineRefs(i + 1).item.current?.focus();
+            }
+          }}
+        />
+      ),
+      amount: formatPkr((Number(line.quantity) || 0) * (Number(line.rate) || 0)),
+    };
+  }
+
+  return (
+    <div className="max-w-5xl">
+      <h2 className="font-display font-semibold text-lg mb-4">{title}</h2>
+
+      <div className="flex flex-wrap items-end gap-4 mb-5">
+        <BrandTabs brands={brands} value={brand} onChange={switchBrand} />
+        <Input
+          ref={dateRef} type="date" label="Date" value={date}
+          onChange={(e) => setDate(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); customerRef.current?.focus(); } }}
+        />
+      </div>
+
+      <div className="mb-5 max-w-md">
+        <PartyPicker
+          type="customer" category={brand.category} value={customer} onChange={setCustomer}
+          resetKey={customerResetKey} inputRef={customerRef} label="Customer"
+          onEnterNext={() => getLineRefs(0).item.current?.focus()}
+        />
+      </div>
+
+      {isBill && (
+        <Card className="p-4 mb-5 grid sm:grid-cols-2 gap-3" style={{ borderColor: THEME.line }}>
+          <Input label="Customer PO # (optional)" value={customerPoNo} onChange={(e) => setCustomerPoNo(e.target.value)} />
+          <Select
+            label="Load from Sale Order (optional)"
+            value={linkedOrder?.id || ''}
+            onChange={(e) => applyLinkedOrder(soOptions.find((o) => o.id === e.target.value) || null)}
+          >
+            <option value="">— none —</option>
+            {soOptions.map((o) => (
+              <option key={o.id} value={o.id}>{o.invoice_no} · {formatDate(o.invoice_date)} · {formatPkr(o.total_amount)}</option>
+            ))}
+          </Select>
+          {!customer && <p className="text-xs text-gray-500 sm:col-span-2">Pick a customer first to see their open sale orders.</p>}
+          {linkedOrder && <p className="text-xs text-gray-500 sm:col-span-2">Loaded from {linkedOrder.invoice_no} — quantities below are editable for partial billing.</p>}
+        </Card>
+      )}
+
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="font-medium text-sm text-gray-700">Line items</h3>
+        <Button variant="ghost" icon={Plus} onClick={() => addLine()}>Add line</Button>
+      </div>
+
+      {/* Desktop / tablet: Excel-like grid */}
+      <Card className="hidden md:block overflow-auto" style={{ borderColor: THEME.line }}>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ backgroundColor: THEME.surface }}>
+              <th className="text-left font-medium px-3 py-2.5 w-2/5">Item</th>
+              <th className="text-left font-medium px-3 py-2.5">Unit</th>
+              <th className="text-left font-medium px-3 py-2.5">Qty</th>
+              <th className="text-left font-medium px-3 py-2.5">Rate</th>
+              <th className="text-left font-medium px-3 py-2.5">Amount</th>
+              <th className="px-2 py-2.5" />
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((line, i) => {
+              const f = lineFields(i, line);
+              return (
+                <tr key={i} className="border-t align-top" style={{ borderColor: THEME.line }}>
+                  <td className="px-3 py-2">{f.item}</td>
+                  <td className="px-3 py-2 w-28">{f.unit}</td>
+                  <td className="px-3 py-2 w-24">{f.qty}</td>
+                  <td className="px-3 py-2 w-28">{f.rate}</td>
+                  <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
+                  <td className="px-2 py-2 pt-4">
+                    <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                      <X size={18} />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* Mobile: step-card entry */}
+      <div className="md:hidden space-y-3">
+        {lines.map((line, i) => {
+          const f = lineFields(i, line);
+          return (
+            <Card key={i} className="p-3 space-y-3" style={{ borderColor: THEME.line }}>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-gray-500">Line {i + 1}</span>
+                <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                  <X size={18} />
+                </button>
+              </div>
+              {f.item}
+              <div className="grid grid-cols-2 gap-3">{f.unit}{f.qty}</div>
+              <div className="grid grid-cols-2 gap-3 items-end">
+                {f.rate}
+                <div>
+                  <span className="block text-sm font-medium text-gray-700 mb-1">Amount</span>
+                  <div className="px-3 py-2.5 text-sm font-medium">{f.amount}</div>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {isBill && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 max-w-xl ml-auto">
+          <Input label="Transport" type="number" value={transport} onChange={(e) => setTransport(e.target.value)} />
+          <Input label="Loading/Unloading" type="number" value={loadingCharge} onChange={(e) => setLoadingCharge(e.target.value)} />
+          <Input label="Discount" type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+          <Input label="Tax" type="number" value={tax} onChange={(e) => setTax(e.target.value)} />
+        </div>
+      )}
+
+      <div className="flex items-center justify-end gap-2 mt-5 mb-6">
+        <span className="text-gray-500">{isBill ? 'Grand Total:' : 'Total:'}</span>
+        <span className="text-xl font-bold" style={{ color: THEME.blue }}>{formatPkr(grandTotal)}</span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={() => save(false)} loading={saving}>Save</Button>
+        <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
+        <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
+        {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
+      </div>
+      <p className="text-xs text-gray-500 mt-2">
+        Enter moves Date → Customer → Item → Unit → Qty → Rate → next line. F2 on the customer field adds a customer, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
+      </p>
+      <ToastHost />
+    </div>
+  );
+}
+
+function buildSaleDocPdf(invoice, items) {
+  const doc = new jsPDF();
+  doc.setFontSize(14);
+  doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
+  doc.setFontSize(10);
+  doc.setTextColor(120);
+  doc.text(`${saleDocLabel(invoice.invoice_type)} — ${invoice.invoice_no}`, 14, 23);
+  doc.text(`Date: ${formatDate(invoice.invoice_date)}   Customer: ${invoice.parties?.name || ''}`, 14, 29);
+  let startY = 35;
+  if (invoice.customer_po_no) {
+    doc.text(`Customer PO #: ${invoice.customer_po_no}`, 14, 35);
+    startY = 41;
+  }
+  doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
+
+  const rows = items.map((it) => [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate), formatPkr(it.amount)]);
+  const subtotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+  const foot = [['', '', '', 'Subtotal', formatPkr(subtotal)]];
+  if (invoice.invoice_type === 'sale') {
+    foot.push(['', '', '', 'Transport + Loading + Tax − Discount',
+      formatPkr(Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
+        + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0))]);
+  }
+  foot.push(['', '', '', 'Grand Total', formatPkr(invoice.total_amount)]);
+
+  autoTable(doc, {
+    startY,
+    head: [['Item', 'Unit', 'Qty', 'Rate', 'Amount']],
+    body: rows,
+    foot,
+    headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
+    footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
+    styles: { fontSize: 9, cellPadding: 3 },
+  });
+  return doc;
+}
+
+function SaleViewModal({ doc, onClose }) {
+  if (!doc) return null;
+  const { invoice, items } = doc;
+  return (
+    <Modal open={!!doc} onClose={onClose} title={invoice.invoice_no} width={560}>
+      <div className="space-y-3 text-sm">
+        <div className="grid grid-cols-2 gap-2">
+          <div><span className="text-gray-500">Date:</span> {formatDate(invoice.invoice_date)}</div>
+          <div><span className="text-gray-500">Customer:</span> {invoice.parties?.name}</div>
+          <div><span className="text-gray-500">Status:</span> <Badge tone={invoice.status === 'voided' ? 'danger' : 'success'}>{invoice.status}</Badge></div>
+          {invoice.customer_po_no && <div><span className="text-gray-500">Customer PO #:</span> {invoice.customer_po_no}</div>}
+        </div>
+        <Card className="overflow-auto" style={{ borderColor: THEME.line }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ backgroundColor: THEME.surface }}>
+                <th className="text-left px-3 py-2">Item</th>
+                <th className="text-left px-3 py-2">Unit</th>
+                <th className="text-left px-3 py-2">Qty</th>
+                <th className="text-left px-3 py-2">Rate</th>
+                <th className="text-left px-3 py-2">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id} className="border-t" style={{ borderColor: THEME.line }}>
+                  <td className="px-3 py-2">{it.items?.name || it.description}</td>
+                  <td className="px-3 py-2">{it.unit}</td>
+                  <td className="px-3 py-2">{it.quantity}</td>
+                  <td className="px-3 py-2">{formatPkr(it.rate)}</td>
+                  <td className="px-3 py-2">{formatPkr(it.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+        {invoice.invoice_type === 'sale' && (
+          <div className="text-xs text-gray-500">
+            Transport: {formatPkr(invoice.transport_charges)} · Loading: {formatPkr(invoice.loading_charges)} ·
+            Tax: {formatPkr(invoice.tax_amount)} · Discount: {formatPkr(invoice.discount_amount)}
+          </div>
+        )}
+        <div className="text-right font-bold" style={{ color: THEME.blue }}>Total: {formatPkr(invoice.total_amount)}</div>
+      </div>
+    </Modal>
+  );
+}
+
+function SaleOldList({ invoiceType }) {
+  const { permissions } = useAuth();
+  const canApprove = !!permissions.entry_sale?.can_approve;
+
+  const [from, setFrom] = useState(toDateInput(startOfMonth()));
+  const [to, setTo] = useState(toDateInput(new Date()));
+  const [customer, setCustomer] = useState(null);
+  const [customerResetKey, setCustomerResetKey] = useState(0);
+  const [invoiceNo, setInvoiceNo] = useState('');
+  const [soNo, setSoNo] = useState('');
+  const [rows, setRows] = useState(null);
+  const [orderLookup, setOrderLookup] = useState({});
+  const [viewDoc, setViewDoc] = useState(null);
+  const [voidTarget, setVoidTarget] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    fetchInvoices({ invoiceType, from, to, partyId: customer?.id, invoiceNo }).then((r) => { if (alive) setRows(r); });
+    if (invoiceType === 'sale') {
+      fetchInvoices({ invoiceType: 'sale_order', from: '2000-01-01', to: '2999-12-31' }).then((orders) => {
+        if (!alive) return;
+        const map = {};
+        orders.forEach((o) => { map[o.id] = o.invoice_no; });
+        setOrderLookup(map);
+      });
+    }
+    return () => { alive = false; };
+  }, [invoiceType, from, to, customer, invoiceNo, refreshKey]);
+
+  const filtered = soNo
+    ? (rows || []).filter((r) => (orderLookup[r.linked_order_id] || '').toLowerCase().includes(soNo.toLowerCase()))
+    : rows;
+
+  async function handleView(row) {
+    try { setViewDoc(await fetchInvoiceWithItems(row.id)); }
+    catch (e) { show(`Could not load document: ${e.message}`, 'danger'); }
+  }
+  async function handlePrint(row) {
+    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); printPdfDoc(buildSaleDocPdf(invoice, items)); }
+    catch (e) { show(`Could not print: ${e.message}`, 'danger'); }
+  }
+  async function handleExportPdf(row) {
+    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); buildSaleDocPdf(invoice, items).save(`${invoice.invoice_no}.pdf`); }
+    catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
+  }
+  async function handleExportExcel(row) {
+    try {
+      const { items } = await fetchInvoiceWithItems(row.id);
+      exportExcel({
+        title: row.invoice_no,
+        columns: ['Item', 'Unit', 'Qty', 'Rate', 'Amount'],
+        rows: items.map((it) => [it.items?.name || it.description || '', it.unit, it.quantity, it.rate, it.amount]),
+      });
+    } catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
+  }
+  async function handleVoidConfirm(reason) {
+    try {
+      await voidInvoice(voidTarget.id, reason);
+      show(`${voidTarget.invoice_no} voided.`);
+      setVoidTarget(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      show(`Could not void: ${e.message}`, 'danger');
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end gap-3 mb-5">
+        <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+        <div className="w-56">
+          <PartyPicker type="customer" value={customer} onChange={setCustomer} resetKey={customerResetKey} label="Customer" />
+        </div>
+        <div className="w-40">
+          <Input label="Invoice #" value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="Search…" />
+        </div>
+        {invoiceType === 'sale' && (
+          <div className="w-40">
+            <Input label="SO #" value={soNo} onChange={(e) => setSoNo(e.target.value)} placeholder="Search…" />
+          </div>
+        )}
+        {(customer || invoiceNo || soNo) && (
+          <Button variant="ghost" onClick={() => { setCustomer(null); setCustomerResetKey((k) => k + 1); setInvoiceNo(''); setSoNo(''); }}>
+            Clear
+          </Button>
+        )}
+      </div>
+
+      {filtered === null ? (
+        <div className="py-20 flex justify-center"><Spinner /></div>
+      ) : filtered.length === 0 ? (
+        <EmptyState>No {saleDocLabel(invoiceType).toLowerCase()} records in this range.</EmptyState>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {filtered.map((row) => (
+            <div key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <div className="flex-1 min-w-[180px]">
+                <div className="font-medium flex items-center gap-2">
+                  {row.invoice_no}
+                  {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
+                  {invoiceType === 'sale' && orderLookup[row.linked_order_id] && (
+                    <span className="text-xs text-gray-400">from {orderLookup[row.linked_order_id]}</span>
+                  )}
+                </div>
+                <div className="text-xs text-gray-500">{formatDate(row.invoice_date)} · {row.parties?.name}</div>
+              </div>
+              <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => handleView(row)} title="View" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <Search size={16} />
+                </button>
+                <button onClick={() => handlePrint(row)} title="Print" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
+                <button onClick={() => handleExportPdf(row)} title="Export PDF" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
+                <button onClick={() => handleExportExcel(row)} title="Export Excel" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileSpreadsheet size={16} />
+                </button>
+                {canApprove && row.status === 'posted' && (
+                  <button onClick={() => setVoidTarget(row)} title="Void" className="p-2 rounded-lg hover:bg-red-50 text-red-500">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <SaleViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
       <ToastHost />
     </div>
