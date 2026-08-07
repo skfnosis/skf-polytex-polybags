@@ -1336,27 +1336,51 @@ function LoginScreen() {
     }
   }
 
+  const LIME = '#C6F135';
+
   return (
     <div
       className="min-h-screen flex items-center justify-center p-6"
-      style={{ background: `linear-gradient(180deg, #EEF2FF 0%, #F7F8FA 45%)` }}
+      style={{ background: 'radial-gradient(circle at 50% 0%, #1A1F16 0%, #0B0C0A 55%)' }}
     >
-      <form onSubmit={submit} className="w-full max-w-sm">
+      <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-6 text-center">
-          <div className="flex items-center gap-3 mb-3">
-            <img src={logoSkfPolytex} alt="SKF PolyTex" className="h-14 w-14 object-contain" />
-            <img src={logoSkfPolybags} alt="SKF PolyBags" className="h-14 w-14 object-contain" />
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-14 w-14 rounded-2xl bg-white flex items-center justify-center overflow-hidden">
+              <img src={logoSkfPolytex} alt="SKF PolyTex" className="h-11 w-11 object-contain" />
+            </div>
+            <div className="h-14 w-14 rounded-2xl bg-white flex items-center justify-center overflow-hidden">
+              <img src={logoSkfPolybags} alt="SKF PolyBags" className="h-11 w-11 object-contain" />
+            </div>
           </div>
-          <h1 className="font-display font-bold text-xl">SKF PolyTex &middot; SKF PolyBags</h1>
-          <p className="text-sm text-gray-500 mt-1">Sign in to the ERP</p>
+          <h1 className="font-display font-bold text-xl text-white">SKF PolyTex &middot; SKF PolyBags</h1>
+          <p className="text-sm mt-1" style={{ color: '#9AA39A' }}>Sign in to the ERP</p>
         </div>
-        <Card className="p-6 space-y-4">
-          <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
-          <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          {error && <p className="text-sm" style={{ color: THEME.danger }}>{error}</p>}
-          <Button type="submit" className="w-full mt-1" loading={loading}>Sign in</Button>
-        </Card>
-      </form>
+
+        <form onSubmit={submit}>
+          <Card className="p-6 space-y-4" style={{ borderTop: `3px solid ${LIME}` }}>
+            <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
+            <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            {error && <p className="text-sm" style={{ color: THEME.danger }}>{error}</p>}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full mt-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              style={{ backgroundColor: LIME, color: '#12141C' }}
+            >
+              {loading && <Spinner size={16} />}
+              Sign in
+            </button>
+          </Card>
+        </form>
+
+        <div className="mt-6 pt-5 text-center" style={{ borderTop: '1px solid #262922' }}>
+          <p dir="rtl" lang="ar" className="font-arabic leading-loose text-sm" style={{ color: '#C7CDC5' }}>
+            اللَّهُمَّ صَلِّ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ كَمَا صَلَّيْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ،
+            اللَّهُمَّ بَارِكَ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ كَمَا بَارَكْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
