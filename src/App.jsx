@@ -1082,17 +1082,46 @@ async function loadImageAsDataUrl(src) {
   });
 }
 
-async function exportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow }) {
+// Centered branding footer on every generated PDF page — deliberately just
+// the company name, no URL. Printing the raw app webpage (Ctrl+P on a live
+// screen) is what stamps the browser's own header/footer with the deployment
+// URL; every document in this app is generated via jsPDF instead specifically
+// to avoid that, so this is the only footer that should ever appear.
+const REPORT_FOOTER_TEXT = 'SKF PolyTex / SKF PolyBags · ERP';
+function drawPdfFooter(doc) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  doc.setFontSize(8);
+  doc.setTextColor(150);
+  doc.text(REPORT_FOOTER_TEXT, pageWidth / 2, pageHeight - 10, { align: 'center' });
+}
+
+// Builds a professional, fixed-size (A4) report document — used for both the
+// "PDF" (save to disk) and "Print" (open + browser print dialog) buttons, so
+// what you print is exactly what you'd download, never the raw dashboard
+// webpage. That raw-webpage route is what produces the broken multi-page,
+// browser-chrome-labeled ("https://...vercel.app") print output — going
+// through jsPDF instead sidesteps it entirely, and lets us put our own
+// branded footer on every page instead of the browser's.
+async function buildReportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow }) {
   const doc = new jsPDF();
   let textX = 14;
-  if (brandLogo) {
-    try {
+  try {
+    if (brandLogo) {
       const dataUrl = await loadImageAsDataUrl(brandLogo);
       doc.addImage(dataUrl, 'PNG', 14, 8, 16, 16);
       textX = 34;
-    } catch {
-      // fall back to text-only header if the logo can't be loaded
+    } else {
+      const [logo1, logo2] = await Promise.all([
+        loadImageAsDataUrl(logoSkfPolytex),
+        loadImageAsDataUrl(logoSkfPolybags),
+      ]);
+      doc.addImage(logo1, 'PNG', 14, 8, 14, 14);
+      doc.addImage(logo2, 'PNG', 29, 8, 14, 14);
+      textX = 47;
     }
+  } catch {
+    // fall back to text-only header if a logo can't be loaded
   }
   doc.setFontSize(14);
   doc.text(brandLabel || 'SKF PolyTex / SKF PolyBags', textX, 16);
@@ -1101,15 +1130,26 @@ async function exportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRo
   doc.text(title, textX, 23);
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
   autoTable(doc, {
-    startY: brandLogo ? 32 : 30,
+    startY: 32,
     head: [columns],
     body: rows,
     foot: totalsRow ? [totalsRow] : undefined,
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 8.5, cellPadding: 3 },
+    didDrawPage: () => drawPdfFooter(doc),
   });
-  doc.save(`${slug(title)}.pdf`);
+  return doc;
+}
+
+async function exportPdf(args) {
+  const doc = await buildReportPdf(args);
+  doc.save(`${slug(args.title)}.pdf`);
+}
+
+async function printReportPdf(args) {
+  const doc = await buildReportPdf(args);
+  printPdfDoc(doc);
 }
 
 function exportExcel({ title, columns, rows }) {
@@ -1139,6 +1179,14 @@ function ReportTable({ title, brandLabel, brandLogo, columns, rows, totalsRow })
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm text-gray-500">{rows.length} row{rows.length === 1 ? '' : 's'}</span>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            icon={FileDown}
+            disabled={rows.length === 0}
+            onClick={() => printReportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow })}
+          >
+            Print
+          </Button>
           <Button
             variant="outline"
             icon={FileDown}
@@ -2398,6 +2446,7 @@ function buildPurchaseDocPdf(invoice, items) {
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
+    didDrawPage: () => drawPdfFooter(doc),
   });
   if (invoice.narration) {
     doc.setFontSize(9);
@@ -3124,6 +3173,7 @@ function buildSaleDocPdf(invoice, items) {
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
+    didDrawPage: () => drawPdfFooter(doc),
   });
   return doc;
 }
@@ -3545,6 +3595,7 @@ function buildVoucherPdf(payment) {
     body: [[payment.parties?.name || '', payment.chart_of_accounts?.name || '', payment.method || '', formatPkr(payment.amount)]],
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
+    didDrawPage: () => drawPdfFooter(doc),
   });
   if (payment.notes) {
     doc.setFontSize(9);
@@ -3914,6 +3965,7 @@ function buildJvPdf(voucher, lines) {
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
+    didDrawPage: () => drawPdfFooter(doc),
   });
   return doc;
 }
