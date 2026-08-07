@@ -3,6 +3,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
+  BookOpen,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import jsPDF from 'jspdf';
@@ -40,6 +41,8 @@ const THEME = {
 
 const PAGES = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { key: 'entry_voucher', label: 'Vouchers', icon: Wallet },
+  { key: 'entry_jv', label: 'General Voucher', icon: BookOpen },
   { key: 'entry_sale', label: 'Sales', icon: ShoppingCart },
   { key: 'entry_purchase', label: 'Purchase', icon: ClipboardList },
   { key: 'entry_expense', label: 'Expense', icon: Receipt },
@@ -127,8 +130,18 @@ async function fetchBrands() {
   return data;
 }
 
-async function fetchChartOfAccounts() {
-  const { data, error } = await supabase.from('chart_of_accounts').select().order('name');
+async function fetchChartOfAccounts({ search = '' } = {}) {
+  let q = supabase.from('chart_of_accounts').select();
+  if (search) q = q.ilike('name', `%${search}%`);
+  const { data, error } = await q.order('name').limit(search ? 50 : 1000);
+  if (error) throw error;
+  return data;
+}
+
+async function createAccount({ name, type, cashBankKind }) {
+  const { data, error } = await supabase.from('chart_of_accounts')
+    .insert({ name, type, cash_bank_kind: type === 'cash_bank' ? cashBankKind : null })
+    .select().single();
   if (error) throw error;
   return data;
 }
@@ -361,6 +374,79 @@ async function recordPayment({ paymentDate, partyId, direction, amount, method, 
   });
   if (error) throw error;
   return data;
+}
+
+async function fetchPayments({ direction, kind, from, to, partyId, voucherNo }) {
+  let q = supabase.from('payments').select('*, parties(name), chart_of_accounts(name, cash_bank_kind)')
+    .eq('direction', direction).gte('payment_date', from).lte('payment_date', to);
+  if (partyId) q = q.eq('party_id', partyId);
+  if (voucherNo) q = q.ilike('voucher_no', `%${voucherNo}%`);
+  const { data, error } = await q.order('payment_date');
+  if (error) throw error;
+  return kind ? (data || []).filter((r) => r.chart_of_accounts?.cash_bank_kind === kind) : data;
+}
+
+async function fetchAllVouchers({ from, to }) {
+  const { data, error } = await supabase.from('payments').select('*, parties(name), chart_of_accounts(name, cash_bank_kind)')
+    .gte('payment_date', from).lte('payment_date', to).order('payment_date');
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchPaymentById(id) {
+  const { data, error } = await supabase.from('payments').select('*, parties(name), chart_of_accounts(name, cash_bank_kind)').eq('id', id).single();
+  if (error) throw error;
+  return data;
+}
+
+async function voidPayment(paymentId, reason) {
+  const { error } = await supabase.rpc('void_payment', { p_payment_id: paymentId, p_reason: reason });
+  if (error) throw error;
+}
+
+async function createJournalVoucher({ voucherDate, narration, lines }) {
+  const { data, error } = await supabase.rpc('create_journal_voucher', {
+    p_voucher_date: voucherDate,
+    p_narration: narration || null,
+    p_lines: lines.map((l) => ({
+      account_id: l.accountId,
+      debit: Number(l.debit) || 0,
+      credit: Number(l.credit) || 0,
+      narration: l.narration || '',
+    })),
+  });
+  if (error) throw error;
+  return data;
+}
+
+async function voidJournalVoucher(voucherId, reason) {
+  const { error } = await supabase.rpc('void_journal_voucher', { p_voucher_id: voucherId, p_reason: reason });
+  if (error) throw error;
+}
+
+async function fetchJournalVouchers({ from, to, voucherNo }) {
+  let q = supabase.from('journal_vouchers').select().gte('voucher_date', from).lte('voucher_date', to);
+  if (voucherNo) q = q.ilike('voucher_no', `%${voucherNo}%`);
+  const { data, error } = await q.order('voucher_date');
+  if (error) throw error;
+  return data;
+}
+
+async function fetchJournalVoucherWithLines(voucherId) {
+  const { data: voucher, error } = await supabase.from('journal_vouchers').select().eq('id', voucherId).single();
+  if (error) throw error;
+  const { data: lines, error: linesError } = await supabase.from('journal_voucher_lines')
+    .select('*, chart_of_accounts(name)').eq('voucher_id', voucherId);
+  if (linesError) throw linesError;
+  return { voucher, lines };
+}
+
+async function fetchOutstandingInvoices(partyId, invoiceType) {
+  const { data, error } = await supabase.from('v_invoice_outstanding').select()
+    .eq('party_id', partyId).eq('invoice_type', invoiceType).gt('outstanding', 0)
+    .order('invoice_date', { ascending: false });
+  if (error) throw error;
+  return data || [];
 }
 
 async function fetchInvoices({ invoiceType, from, to, brandKey, partyId, invoiceNo, linkedOrderId }) {
@@ -861,6 +947,91 @@ function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
 }
 
 // ============================================================================
+// ACCOUNT PICKER — searchable combobox over chart_of_accounts (used by
+// Journal Voucher lines). No inline "add new" — accounts are managed on
+// the Admin page, not created mid-entry the way parties/items are.
+// ============================================================================
+
+function AccountPicker({ value, onChange, resetKey, inputRef, onEnterNext }) {
+  const [query, setQuery] = useState(value?.name || '');
+  const [open, setOpen] = useState(false);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const boxRef = useRef(null);
+
+  useEffect(() => {
+    setQuery(value?.name || '');
+  }, [resetKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    fetchChartOfAccounts({ search: query })
+      .then((rows) => { if (alive) { setResults(rows); setHighlight(0); } })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [query]);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  function pick(a) {
+    onChange(a);
+    setQuery(a.name);
+    setOpen(false);
+    onEnterNext?.();
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHighlight((h) => Math.min(h + 1, results.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter' && onEnterNext) {
+      e.preventDefault();
+      if (open && results[highlight]) pick(results[highlight]);
+      else if (value) onEnterNext();
+    }
+  }
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <Input
+        ref={inputRef}
+        label="Account"
+        placeholder="Search accounts…"
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onKeyDown={handleKeyDown}
+      />
+      {open && (
+        <div className="absolute z-40 mt-1 w-full bg-white rounded-lg border shadow-lg max-h-64 overflow-auto" style={{ borderColor: THEME.line }}>
+          {loading && <div className="p-3 text-sm text-gray-500">Searching…</div>}
+          {!loading && results.length === 0 && <div className="p-3 text-sm text-gray-500">No accounts found.</div>}
+          {!loading && results.map((a, i) => (
+            <button
+              key={a.id}
+              type="button"
+              className={cx('w-full text-left px-3 py-2 text-sm', i === highlight ? 'bg-gray-100' : 'hover:bg-gray-50')}
+              onMouseEnter={() => setHighlight(i)}
+              onClick={() => pick(a)}
+            >
+              <div className="font-medium">{a.name}</div>
+              <div className="text-xs text-gray-500 capitalize">{a.type.replace('_', ' ')}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // BRAND TABS
 // ============================================================================
 
@@ -1144,7 +1315,7 @@ function LoginScreen() {
 
 const NAV_GROUPS = [
   { label: 'Dashboard', keys: ['dashboard'] },
-  { label: 'Entry', keys: ['entry_sale', 'entry_purchase', 'entry_expense'] },
+  { label: 'Entry', keys: ['entry_voucher', 'entry_jv', 'entry_sale', 'entry_purchase', 'entry_expense'] },
   { label: 'Reports', keys: ['reports'] },
   { label: 'Party Master', keys: ['party_master'] },
   { label: 'Admin', keys: ['settings'] },
@@ -1310,6 +1481,8 @@ function NavGroupButton({ group, current, onSelect }) {
 function PageRouter({ page }) {
   switch (page) {
     case 'dashboard': return <DashboardScreen />;
+    case 'entry_voucher': return <VoucherModule />;
+    case 'entry_jv': return <JournalVoucherModule />;
     case 'entry_sale': return <SalesModule />;
     case 'entry_purchase': return <PurchaseModule />;
     case 'entry_expense': return <ExpenseScreen />;
@@ -2225,11 +2398,14 @@ function VoidReasonModal({ target, onClose, onConfirm }) {
     try { await onConfirm(reason.trim()); } finally { setBusy(false); }
   }
 
+  const docNo = target?.invoice_no || target?.voucher_no || '';
+  const showStockNote = !!target?.invoice_type && target.invoice_type !== 'purchase_order';
+
   return (
-    <Modal open={!!target} onClose={onClose} title={`Void ${target?.invoice_no || ''}`}>
+    <Modal open={!!target} onClose={onClose} title={`Void ${docNo}`}>
       <div className="space-y-3">
         <p className="text-sm text-gray-500">
-          This reverses the ledger{target?.invoice_type !== 'purchase_order' ? ' and stock' : ''} impact of this document with an audit-trail entry. It cannot be undone.
+          This reverses the ledger{showStockNote ? ' and stock' : ''} impact of this document with an audit-trail entry. It cannot be undone.
         </p>
         <Input label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
         <div className="flex justify-end gap-2 pt-2">
@@ -3110,6 +3286,754 @@ function SaleOldList({ invoiceType }) {
 }
 
 // ============================================================================
+// PAYMENT VOUCHERS — CRV / CPV / BRV / BPV. Not a new document type: all
+// four are the existing record_payment() receipt/payment, tabbed by which
+// cash_bank_kind the money moved through (cash vs bank), same New/Old
+// pattern as Purchase and Sales. Sharing one entry_voucher permission
+// (not four) keeps the permission grid from growing a row per tab.
+// ============================================================================
+
+const VOUCHER_TABS = [
+  { key: 'crv', label: 'Cash Receipt (CRV)', direction: 'receipt', kind: 'cash' },
+  { key: 'brv', label: 'Bank Receipt (BRV)', direction: 'receipt', kind: 'bank' },
+  { key: 'cpv', label: 'Cash Payment (CPV)', direction: 'payment', kind: 'cash' },
+  { key: 'bpv', label: 'Bank Payment (BPV)', direction: 'payment', kind: 'bank' },
+];
+
+function VoucherModule() {
+  const [tab, setTab] = useState('crv');
+  const [mode, setMode] = useState('new');
+  const active = VOUCHER_TABS.find((t) => t.key === tab);
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="flex flex-wrap gap-2">
+          {VOUCHER_TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => { setTab(t.key); setMode('new'); }}
+              className="px-3 py-1.5 rounded-full text-sm font-medium border"
+              style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+          {[{ k: 'new', l: 'New' }, { k: 'old', l: 'Old' }].map((o) => (
+            <button
+              key={o.k}
+              onClick={() => setMode(o.k)}
+              className="px-3 py-1.5 rounded-md text-sm font-medium"
+              style={mode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+            >
+              {o.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {mode === 'new'
+        ? <VoucherEntryForm key={tab} tab={active} onSavedClose={() => setMode('old')} />
+        : <VoucherOldList key={tab} tab={active} />}
+    </div>
+  );
+}
+
+function VoucherEntryForm({ tab, onSavedClose }) {
+  const partyType = tab.direction === 'receipt' ? 'customer' : 'supplier';
+  const invoiceType = tab.direction === 'receipt' ? 'sale' : 'purchase';
+
+  const [accounts, setAccounts] = useState([]);
+  const [cashBankAccountId, setCashBankAccountId] = useState('');
+  const [date, setDate] = useState(toDateInput(new Date()));
+  const [party, setParty] = useState(null);
+  const [partyResetKey, setPartyResetKey] = useState(0);
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState('bank_transfer');
+  const [linkedInvoiceId, setLinkedInvoiceId] = useState('');
+  const [outstanding, setOutstanding] = useState([]);
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [savedNo, setSavedNo] = useState(null);
+  const { show, ToastHost } = useToast();
+
+  const dateRef = useRef(null);
+  const partyRef = useRef(null);
+  const amountRef = useRef(null);
+  const notesRef = useRef(null);
+
+  useEffect(() => { dateRef.current?.focus(); }, []);
+
+  useEffect(() => {
+    fetchChartOfAccounts().then((rows) => {
+      const ofKind = rows.filter((a) => a.type === 'cash_bank' && a.cash_bank_kind === tab.kind);
+      setAccounts(ofKind);
+      if (ofKind.length === 1) setCashBankAccountId(ofKind[0].id);
+    });
+  }, [tab.kind]);
+
+  useEffect(() => {
+    if (!party) { setOutstanding([]); setLinkedInvoiceId(''); return; }
+    let alive = true;
+    fetchOutstandingInvoices(party.id, invoiceType).then((rows) => { if (alive) setOutstanding(rows); });
+    return () => { alive = false; };
+  }, [party, invoiceType]);
+
+  function resetForm() {
+    setParty(null);
+    setPartyResetKey((k) => k + 1);
+    setAmount('');
+    setLinkedInvoiceId('');
+    setNotes('');
+    requestAnimationFrame(() => dateRef.current?.focus());
+  }
+
+  async function save(closeAfter) {
+    if (!party) { show('Pick a party.', 'danger'); return; }
+    if (!cashBankAccountId) { show(`No ${tab.kind} account is set up yet — add one under Admin.`, 'danger'); return; }
+    if (!Number(amount) || Number(amount) <= 0) { show('Enter a valid amount.', 'danger'); return; }
+    setSaving(true);
+    try {
+      const id = await recordPayment({
+        paymentDate: date, partyId: party.id, direction: tab.direction, amount,
+        method: tab.kind === 'cash' ? 'cash' : method, cashBankAccountId,
+        linkedInvoiceId: linkedInvoiceId || undefined, notes,
+      });
+      const saved = await fetchPaymentById(id);
+      show(`Saved. ${saved.voucher_no} created.`);
+      setSavedNo(saved.voucher_no);
+      resetForm();
+      if (closeAfter) onSavedClose?.();
+    } catch (e) {
+      show(`Could not save: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function draftPrint() {
+    printPdfDoc(buildVoucherPdf({
+      voucher_no: savedNo || 'DRAFT', payment_date: date, direction: tab.direction,
+      amount, method: tab.kind === 'cash' ? 'cash' : method, notes,
+      parties: { name: party?.name }, chart_of_accounts: { name: accounts.find((a) => a.id === cashBankAccountId)?.name },
+    }));
+  }
+
+  useEffect(() => {
+    function onKey(e) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(false); }
+      if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); draftPrint(); }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  return (
+    <div className="max-w-lg">
+      <h2 className="font-display font-semibold text-lg mb-4">{tab.label}</h2>
+      <div className="space-y-4">
+        <Input
+          ref={dateRef} type="date" label="Date" value={date}
+          onChange={(e) => setDate(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); partyRef.current?.focus(); } }}
+        />
+
+        <PartyPicker
+          type={partyType} value={party} onChange={setParty}
+          resetKey={partyResetKey} inputRef={partyRef} label="Party"
+          onEnterNext={() => amountRef.current?.focus()}
+        />
+
+        {accounts.length > 1 && (
+          <Select label={`${tab.kind === 'cash' ? 'Cash' : 'Bank'} account`} value={cashBankAccountId} onChange={(e) => setCashBankAccountId(e.target.value)}>
+            <option value="">Select…</option>
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </Select>
+        )}
+        {accounts.length === 0 && (
+          <p className="text-xs" style={{ color: THEME.danger }}>No {tab.kind} account is set up yet — add one under Admin &rarr; Chart of Accounts.</p>
+        )}
+
+        {tab.kind === 'bank' && (
+          <Select label="Method" value={method} onChange={(e) => setMethod(e.target.value)}>
+            <option value="bank_transfer">Bank transfer</option>
+            <option value="cheque">Cheque</option>
+            <option value="other">Other</option>
+          </Select>
+        )}
+
+        <Input
+          ref={amountRef} type="number" label="Amount (PKR)" value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); notesRef.current?.focus(); } }}
+        />
+
+        {outstanding.length > 0 && (
+          <Select label="Apply against invoice (optional)" value={linkedInvoiceId} onChange={(e) => setLinkedInvoiceId(e.target.value)}>
+            <option value="">— none / general —</option>
+            {outstanding.map((o) => (
+              <option key={o.invoice_id} value={o.invoice_id}>{o.invoice_no} · {formatDate(o.invoice_date)} · outstanding {formatPkr(o.outstanding)}</option>
+            ))}
+          </Select>
+        )}
+
+        <Input ref={notesRef} label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+
+        <div className="flex flex-wrap items-center gap-2 pt-2">
+          <Button onClick={() => save(false)} loading={saving}>Save</Button>
+          <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
+          <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
+          {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
+        </div>
+        <p className="text-xs text-gray-500">
+          Enter moves Date → Party → Amount → Notes. Ctrl+S saves, Ctrl+P prints the draft.
+        </p>
+      </div>
+      <ToastHost />
+    </div>
+  );
+}
+
+function buildVoucherPdf(payment) {
+  const doc = new jsPDF();
+  doc.setFontSize(14);
+  doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
+  doc.setFontSize(10);
+  doc.setTextColor(120);
+  doc.text(`Voucher — ${payment.voucher_no}`, 14, 23);
+  doc.text(`Date: ${formatDate(payment.payment_date)}   Party: ${payment.parties?.name || ''}`, 14, 29);
+  doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
+
+  autoTable(doc, {
+    startY: 36,
+    head: [[payment.direction === 'receipt' ? 'Received from' : 'Paid to', 'Account', 'Method', 'Amount']],
+    body: [[payment.parties?.name || '', payment.chart_of_accounts?.name || '', payment.method || '', formatPkr(payment.amount)]],
+    headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
+    styles: { fontSize: 9, cellPadding: 3 },
+  });
+  if (payment.notes) {
+    doc.setFontSize(9);
+    doc.setTextColor(90);
+    doc.text(`Notes: ${payment.notes}`, 14, doc.lastAutoTable.finalY + 8);
+  }
+  return doc;
+}
+
+function VoucherViewModal({ payment, onClose }) {
+  if (!payment) return null;
+  return (
+    <Modal open={!!payment} onClose={onClose} title={payment.voucher_no} width={480}>
+      <div className="space-y-3 text-sm">
+        <div className="grid grid-cols-2 gap-2">
+          <div><span className="text-gray-500">Date:</span> {formatDate(payment.payment_date)}</div>
+          <div><span className="text-gray-500">Party:</span> {payment.parties?.name}</div>
+          <div><span className="text-gray-500">Account:</span> {payment.chart_of_accounts?.name}</div>
+          <div><span className="text-gray-500">Method:</span> {payment.method}</div>
+          <div><span className="text-gray-500">Status:</span> <Badge tone={payment.status === 'voided' ? 'danger' : 'success'}>{payment.status}</Badge></div>
+        </div>
+        {payment.notes && <div className="text-gray-500">Notes: {payment.notes}</div>}
+        <div className="text-right font-bold" style={{ color: THEME.blue }}>Amount: {formatPkr(payment.amount)}</div>
+      </div>
+    </Modal>
+  );
+}
+
+function VoucherOldList({ tab }) {
+  const { permissions } = useAuth();
+  const canApprove = !!permissions.entry_voucher?.can_approve;
+
+  const [from, setFrom] = useState(toDateInput(startOfMonth()));
+  const [to, setTo] = useState(toDateInput(new Date()));
+  const [party, setParty] = useState(null);
+  const [partyResetKey, setPartyResetKey] = useState(0);
+  const [voucherNo, setVoucherNo] = useState('');
+  const [rows, setRows] = useState(null);
+  const [viewPayment, setViewPayment] = useState(null);
+  const [voidTarget, setVoidTarget] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    fetchPayments({ direction: tab.direction, kind: tab.kind, from, to, partyId: party?.id, voucherNo })
+      .then((r) => { if (alive) setRows(r); });
+    return () => { alive = false; };
+  }, [tab, from, to, party, voucherNo, refreshKey]);
+
+  async function handlePrint(row) { printPdfDoc(buildVoucherPdf(row)); }
+  async function handleExportPdf(row) { buildVoucherPdf(row).save(`${row.voucher_no}.pdf`); }
+  function handleExportExcel(row) {
+    exportExcel({
+      title: row.voucher_no,
+      columns: ['Date', 'Party', 'Account', 'Method', 'Amount'],
+      rows: [[formatDate(row.payment_date), row.parties?.name || '', row.chart_of_accounts?.name || '', row.method || '', row.amount]],
+    });
+  }
+  async function handleVoidConfirm(reason) {
+    try {
+      await voidPayment(voidTarget.id, reason);
+      show(`${voidTarget.voucher_no} voided.`);
+      setVoidTarget(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      show(`Could not void: ${e.message}`, 'danger');
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end gap-3 mb-5">
+        <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+        <div className="w-56">
+          <PartyPicker type={tab.direction === 'receipt' ? 'customer' : 'supplier'} value={party} onChange={setParty} resetKey={partyResetKey} label="Party" />
+        </div>
+        <div className="w-40">
+          <Input label="Voucher #" value={voucherNo} onChange={(e) => setVoucherNo(e.target.value)} placeholder="Search…" />
+        </div>
+        {(party || voucherNo) && (
+          <Button variant="ghost" onClick={() => { setParty(null); setPartyResetKey((k) => k + 1); setVoucherNo(''); }}>
+            Clear
+          </Button>
+        )}
+      </div>
+
+      {rows === null ? (
+        <div className="py-20 flex justify-center"><Spinner /></div>
+      ) : rows.length === 0 ? (
+        <EmptyState>No {tab.label.toLowerCase()} vouchers in this range.</EmptyState>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {rows.map((row) => (
+            <div key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <div className="flex-1 min-w-[180px]">
+                <div className="font-medium flex items-center gap-2">
+                  {row.voucher_no}
+                  {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
+                </div>
+                <div className="text-xs text-gray-500">{formatDate(row.payment_date)} · {row.parties?.name}</div>
+              </div>
+              <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.amount)}</div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setViewPayment(row)} title="View" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <Search size={16} />
+                </button>
+                <button onClick={() => handlePrint(row)} title="Print" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
+                <button onClick={() => handleExportPdf(row)} title="Export PDF" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
+                <button onClick={() => handleExportExcel(row)} title="Export Excel" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileSpreadsheet size={16} />
+                </button>
+                {canApprove && row.status === 'posted' && (
+                  <button onClick={() => setVoidTarget(row)} title="Void" className="p-2 rounded-lg hover:bg-red-50 text-red-500">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <VoucherViewModal payment={viewPayment} onClose={() => setViewPayment(null)} />
+      <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
+      <ToastHost />
+    </div>
+  );
+}
+
+// ============================================================================
+// GENERAL VOUCHER (JV) — free-form multi-line entry. Any number of lines
+// (minimum 2), each debits or credits one account; total debit must equal
+// total credit before it can be saved. New in this module — see the
+// migration's doc comment for why this needed real schema, unlike the
+// four payment vouchers above.
+// ============================================================================
+
+function emptyJvLine() {
+  return { accountId: null, accountName: '', debit: '', credit: '' };
+}
+
+function JournalVoucherModule() {
+  const [mode, setMode] = useState('new');
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-5">
+        <h2 className="font-display font-semibold text-lg">General Voucher</h2>
+        <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+          {[{ k: 'new', l: 'New' }, { k: 'old', l: 'Old' }].map((o) => (
+            <button
+              key={o.k}
+              onClick={() => setMode(o.k)}
+              className="px-3 py-1.5 rounded-md text-sm font-medium"
+              style={mode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+            >
+              {o.l}
+            </button>
+          ))}
+        </div>
+      </div>
+      {mode === 'new'
+        ? <JournalVoucherEntryForm onSavedClose={() => setMode('old')} />
+        : <JournalVoucherOldList />}
+    </div>
+  );
+}
+
+function JournalVoucherEntryForm({ onSavedClose }) {
+  const [date, setDate] = useState(toDateInput(new Date()));
+  const [narration, setNarration] = useState('');
+  const [lines, setLines] = useState([emptyJvLine(), emptyJvLine()]);
+  const [saving, setSaving] = useState(false);
+  const [savedNo, setSavedNo] = useState(null);
+  const { show, ToastHost } = useToast();
+
+  const dateRef = useRef(null);
+  const narrationRef = useRef(null);
+  const lineRefs = useRef({});
+  function getLineRefs(i) {
+    if (!lineRefs.current[i]) {
+      lineRefs.current[i] = { account: React.createRef(), debit: React.createRef(), credit: React.createRef() };
+    }
+    return lineRefs.current[i];
+  }
+
+  useEffect(() => { dateRef.current?.focus(); }, []);
+
+  function addLine(focus = true) {
+    setLines((ls) => {
+      const next = [...ls, emptyJvLine()];
+      if (focus) {
+        const idx = next.length - 1;
+        requestAnimationFrame(() => getLineRefs(idx).account.current?.focus());
+      }
+      return next;
+    });
+  }
+  function updateLine(i, patch) {
+    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  }
+  function removeLine(i) {
+    setLines((ls) => (ls.length <= 2 ? ls : ls.filter((_, idx) => idx !== i)));
+  }
+
+  const totalDebit = lines.reduce((s, l) => s + (Number(l.debit) || 0), 0);
+  const totalCredit = lines.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+  const balanced = totalDebit > 0 && totalDebit === totalCredit;
+
+  function resetForm() {
+    setNarration('');
+    setLines([emptyJvLine(), emptyJvLine()]);
+    lineRefs.current = {};
+    requestAnimationFrame(() => dateRef.current?.focus());
+  }
+
+  async function save(closeAfter) {
+    const validLines = lines.filter((l) => l.accountId && (Number(l.debit) > 0 || Number(l.credit) > 0));
+    if (validLines.length < 2) { show('Add at least two lines with an account and an amount.', 'danger'); return; }
+    if (!balanced) { show('Total debit must equal total credit before saving.', 'danger'); return; }
+    setSaving(true);
+    try {
+      const id = await createJournalVoucher({ voucherDate: date, narration, lines: validLines });
+      const { voucher } = await fetchJournalVoucherWithLines(id);
+      show(`Saved. ${voucher.voucher_no} created.`);
+      setSavedNo(voucher.voucher_no);
+      resetForm();
+      if (closeAfter) onSavedClose?.();
+    } catch (e) {
+      show(`Could not save: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    function onKey(e) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(false); }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  return (
+    <div className="max-w-4xl">
+      <div className="flex flex-wrap items-end gap-4 mb-5">
+        <Input
+          ref={dateRef} type="date" label="Date" value={date}
+          onChange={(e) => setDate(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); narrationRef.current?.focus(); } }}
+        />
+        <div className="flex-1 min-w-[240px]">
+          <Input
+            ref={narrationRef} label="Narration (optional)" value={narration}
+            onChange={(e) => setNarration(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(0).account.current?.focus(); } }}
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="font-medium text-sm text-gray-700">Lines</h3>
+        <Button variant="ghost" icon={Plus} onClick={() => addLine()}>Add line</Button>
+      </div>
+
+      <Card className="overflow-auto" style={{ borderColor: THEME.line }}>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ backgroundColor: THEME.surface }}>
+              <th className="text-left font-medium px-3 py-2.5 w-2/5">Account</th>
+              <th className="text-left font-medium px-3 py-2.5">Debit</th>
+              <th className="text-left font-medium px-3 py-2.5">Credit</th>
+              <th className="px-2 py-2.5" />
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((line, i) => (
+              <tr key={i} className="border-t align-top" style={{ borderColor: THEME.line }}>
+                <td className="px-3 py-2">
+                  <AccountPicker
+                    value={line.accountId ? { id: line.accountId, name: line.accountName } : null}
+                    onChange={(a) => updateLine(i, { accountId: a.id, accountName: a.name })}
+                    resetKey={`${i}-${line.accountId || 'empty'}`}
+                    inputRef={getLineRefs(i).account}
+                    onEnterNext={() => getLineRefs(i).debit.current?.focus()}
+                  />
+                </td>
+                <td className="px-3 py-2 w-36">
+                  <Input
+                    ref={getLineRefs(i).debit}
+                    type="number" label="Debit" value={line.debit}
+                    onChange={(e) => updateLine(i, { debit: e.target.value, credit: e.target.value ? '' : line.credit })}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).credit.current?.focus(); } }}
+                  />
+                </td>
+                <td className="px-3 py-2 w-36">
+                  <Input
+                    ref={getLineRefs(i).credit}
+                    type="number" label="Credit" value={line.credit}
+                    onChange={(e) => updateLine(i, { credit: e.target.value, debit: e.target.value ? '' : line.debit })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (i === lines.length - 1) addLine();
+                        else getLineRefs(i + 1).account.current?.focus();
+                      }
+                    }}
+                  />
+                </td>
+                <td className="px-2 py-2 pt-4">
+                  {lines.length > 2 && (
+                    <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                      <X size={18} />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <div className="flex items-center justify-end gap-6 mt-5 mb-2 text-sm">
+        <span>Total Debit: <strong>{formatPkr(totalDebit)}</strong></span>
+        <span>Total Credit: <strong>{formatPkr(totalCredit)}</strong></span>
+        <Badge tone={balanced ? 'success' : 'danger'}>{balanced ? 'Balanced' : 'Not balanced'}</Badge>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mt-3">
+        <Button onClick={() => save(false)} loading={saving} disabled={!balanced}>Save</Button>
+        <Button variant="outline" onClick={() => save(true)} loading={saving} disabled={!balanced}>Save &amp; Close</Button>
+        {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
+      </div>
+      <p className="text-xs text-gray-500 mt-2">
+        Enter moves Date → Narration → Account → Debit → Credit → next line. Ctrl+S saves once the two sides balance.
+      </p>
+      <ToastHost />
+    </div>
+  );
+}
+
+function buildJvPdf(voucher, lines) {
+  const doc = new jsPDF();
+  doc.setFontSize(14);
+  doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
+  doc.setFontSize(10);
+  doc.setTextColor(120);
+  doc.text(`General Voucher — ${voucher.voucher_no}`, 14, 23);
+  doc.text(`Date: ${formatDate(voucher.voucher_date)}${voucher.narration ? `   ${voucher.narration}` : ''}`, 14, 29);
+  doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
+
+  const rows = lines.map((l) => [l.chart_of_accounts?.name || '', l.debit > 0 ? formatPkr(l.debit) : '', l.credit > 0 ? formatPkr(l.credit) : '']);
+  const totalDebit = lines.reduce((s, l) => s + Number(l.debit || 0), 0);
+  const totalCredit = lines.reduce((s, l) => s + Number(l.credit || 0), 0);
+
+  autoTable(doc, {
+    startY: 35,
+    head: [['Account', 'Debit', 'Credit']],
+    body: rows,
+    foot: [['Total', formatPkr(totalDebit), formatPkr(totalCredit)]],
+    headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
+    footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
+    styles: { fontSize: 9, cellPadding: 3 },
+  });
+  return doc;
+}
+
+function JournalVoucherViewModal({ doc, onClose }) {
+  if (!doc) return null;
+  const { voucher, lines } = doc;
+  return (
+    <Modal open={!!doc} onClose={onClose} title={voucher.voucher_no} width={560}>
+      <div className="space-y-3 text-sm">
+        <div className="grid grid-cols-2 gap-2">
+          <div><span className="text-gray-500">Date:</span> {formatDate(voucher.voucher_date)}</div>
+          <div><span className="text-gray-500">Status:</span> <Badge tone={voucher.status === 'voided' ? 'danger' : 'success'}>{voucher.status}</Badge></div>
+          {voucher.narration && <div className="col-span-2"><span className="text-gray-500">Narration:</span> {voucher.narration}</div>}
+        </div>
+        <Card className="overflow-auto" style={{ borderColor: THEME.line }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ backgroundColor: THEME.surface }}>
+                <th className="text-left px-3 py-2">Account</th>
+                <th className="text-left px-3 py-2">Debit</th>
+                <th className="text-left px-3 py-2">Credit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((l) => (
+                <tr key={l.id} className="border-t" style={{ borderColor: THEME.line }}>
+                  <td className="px-3 py-2">{l.chart_of_accounts?.name}</td>
+                  <td className="px-3 py-2">{l.debit > 0 ? formatPkr(l.debit) : ''}</td>
+                  <td className="px-3 py-2">{l.credit > 0 ? formatPkr(l.credit) : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+        <div className="text-right font-bold" style={{ color: THEME.blue }}>Total: {formatPkr(voucher.total_amount)}</div>
+      </div>
+    </Modal>
+  );
+}
+
+function JournalVoucherOldList() {
+  const { permissions } = useAuth();
+  const canApprove = !!permissions.entry_jv?.can_approve;
+
+  const [from, setFrom] = useState(toDateInput(startOfMonth()));
+  const [to, setTo] = useState(toDateInput(new Date()));
+  const [voucherNo, setVoucherNo] = useState('');
+  const [rows, setRows] = useState(null);
+  const [viewDoc, setViewDoc] = useState(null);
+  const [voidTarget, setVoidTarget] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    fetchJournalVouchers({ from, to, voucherNo }).then((r) => { if (alive) setRows(r); });
+    return () => { alive = false; };
+  }, [from, to, voucherNo, refreshKey]);
+
+  async function handleView(row) {
+    try { setViewDoc(await fetchJournalVoucherWithLines(row.id)); }
+    catch (e) { show(`Could not load voucher: ${e.message}`, 'danger'); }
+  }
+  async function handlePrint(row) {
+    try { const { voucher, lines } = await fetchJournalVoucherWithLines(row.id); printPdfDoc(buildJvPdf(voucher, lines)); }
+    catch (e) { show(`Could not print: ${e.message}`, 'danger'); }
+  }
+  async function handleExportPdf(row) {
+    try { const { voucher, lines } = await fetchJournalVoucherWithLines(row.id); buildJvPdf(voucher, lines).save(`${voucher.voucher_no}.pdf`); }
+    catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
+  }
+  async function handleExportExcel(row) {
+    try {
+      const { lines } = await fetchJournalVoucherWithLines(row.id);
+      exportExcel({
+        title: row.voucher_no,
+        columns: ['Account', 'Debit', 'Credit'],
+        rows: lines.map((l) => [l.chart_of_accounts?.name || '', l.debit, l.credit]),
+      });
+    } catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
+  }
+  async function handleVoidConfirm(reason) {
+    try {
+      await voidJournalVoucher(voidTarget.id, reason);
+      show(`${voidTarget.voucher_no} voided.`);
+      setVoidTarget(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      show(`Could not void: ${e.message}`, 'danger');
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end gap-3 mb-5">
+        <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+        <div className="w-40">
+          <Input label="Voucher #" value={voucherNo} onChange={(e) => setVoucherNo(e.target.value)} placeholder="Search…" />
+        </div>
+        {voucherNo && <Button variant="ghost" onClick={() => setVoucherNo('')}>Clear</Button>}
+      </div>
+
+      {rows === null ? (
+        <div className="py-20 flex justify-center"><Spinner /></div>
+      ) : rows.length === 0 ? (
+        <EmptyState>No general vouchers in this range.</EmptyState>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {rows.map((row) => (
+            <div key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <div className="flex-1 min-w-[180px]">
+                <div className="font-medium flex items-center gap-2">
+                  {row.voucher_no}
+                  {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
+                </div>
+                <div className="text-xs text-gray-500">{formatDate(row.voucher_date)}{row.narration ? ` · ${row.narration}` : ''}</div>
+              </div>
+              <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => handleView(row)} title="View" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <Search size={16} />
+                </button>
+                <button onClick={() => handlePrint(row)} title="Print" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
+                <button onClick={() => handleExportPdf(row)} title="Export PDF" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
+                <button onClick={() => handleExportExcel(row)} title="Export Excel" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileSpreadsheet size={16} />
+                </button>
+                {canApprove && row.status === 'posted' && (
+                  <button onClick={() => setVoidTarget(row)} title="Void" className="p-2 rounded-lg hover:bg-red-50 text-red-500">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <JournalVoucherViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
+      <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
+      <ToastHost />
+    </div>
+  );
+}
+
+// ============================================================================
 // EXPENSE ENTRY
 // ============================================================================
 
@@ -3406,6 +4330,7 @@ const REPORT_TYPES = [
   { key: 'sale', label: 'Sale Report' },
   { key: 'purchase', label: 'Purchase Report' },
   { key: 'expense', label: 'Expense Report' },
+  { key: 'vouchers', label: 'Vouchers' },
   { key: 'ledger', label: 'General Ledger' },
   { key: 'trial_balance', label: 'Trial Balance' },
 ];
@@ -3437,13 +4362,14 @@ function ReportsScreen() {
       {type !== 'trial_balance' && (
         <div className="flex flex-wrap items-end gap-4 mb-5">
           <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
-          {type !== 'expense' && <BrandTabs brands={brands} value={brand} onChange={setBrand} allowAll />}
+          {type !== 'expense' && type !== 'vouchers' && <BrandTabs brands={brands} value={brand} onChange={setBrand} allowAll />}
         </div>
       )}
 
       {type === 'sale' && <InvoiceReport invoiceType="sale" from={from} to={to} brand={brand} />}
       {type === 'purchase' && <InvoiceReport invoiceType="purchase" from={from} to={to} brand={brand} />}
       {type === 'expense' && <ExpenseReport from={from} to={to} />}
+      {type === 'vouchers' && <VoucherReport from={from} to={to} />}
       {type === 'ledger' && <LedgerReport from={from} to={to} brand={brand} />}
       {type === 'trial_balance' && <TrialBalanceReport />}
     </div>
@@ -3506,6 +4432,36 @@ function ExpenseReport({ from, to }) {
   );
 }
 
+function VoucherReport({ from, to }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    fetchAllVouchers({ from, to }).then((r) => { if (alive) setRows(r); });
+    return () => { alive = false; };
+  }, [from, to]);
+
+  if (rows === null) return <div className="py-20 flex justify-center"><Spinner /></div>;
+
+  const total = rows.reduce((s, r) => s + Number(r.amount), 0);
+  const table = rows.map((r) => {
+    const tab = VOUCHER_TABS.find((t) => t.direction === r.direction && t.kind === r.chart_of_accounts?.cash_bank_kind);
+    return [
+      r.voucher_no, formatDate(r.payment_date), tab?.key.toUpperCase() || r.direction,
+      r.parties?.name || '', formatPkr(r.amount), r.status,
+    ];
+  });
+
+  return (
+    <ReportTable
+      title="Vouchers"
+      columns={['Voucher #', 'Date', 'Type', 'Party', 'Amount', 'Status']}
+      rows={table}
+      totalsRow={['', '', '', 'Total', formatPkr(total), '']}
+    />
+  );
+}
+
 function LedgerReport({ from, to, brand }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {
@@ -3560,8 +4516,10 @@ function TrialBalanceReport() {
 function SettingsScreen() {
   const { profile } = useAuth();
   const [showPermissions, setShowPermissions] = useState(false);
+  const [showChartOfAccounts, setShowChartOfAccounts] = useState(false);
 
   if (showPermissions) return <PermissionsScreen onBack={() => setShowPermissions(false)} />;
+  if (showChartOfAccounts) return <ChartOfAccountsScreen onBack={() => setShowChartOfAccounts(false)} />;
 
   return (
     <div className="max-w-xl space-y-4">
@@ -3596,7 +4554,102 @@ function SettingsScreen() {
         </button>
       )}
 
+      {profile?.is_admin && (
+        <button
+          onClick={() => setShowChartOfAccounts(true)}
+          className="w-full text-left"
+        >
+          <Card className="p-4 flex items-center justify-between hover:bg-gray-50">
+            <div className="flex items-center gap-3">
+              <ClipboardList size={20} style={{ color: THEME.blue }} />
+              <div>
+                <div className="font-medium">Chart of Accounts</div>
+                <div className="text-xs text-gray-500">View and add ledger accounts</div>
+              </div>
+            </div>
+            <ChevronRight size={18} className="text-gray-300" />
+          </Card>
+        </button>
+      )}
+
       {profile?.is_admin && <DashboardAlertSettings />}
+    </div>
+  );
+}
+
+function ChartOfAccountsScreen({ onBack }) {
+  const [accounts, setAccounts] = useState(null);
+  const [name, setName] = useState('');
+  const [type, setType] = useState('expense');
+  const [cashBankKind, setCashBankKind] = useState('cash');
+  const [saving, setSaving] = useState(false);
+  const { show, ToastHost } = useToast();
+
+  function reload() {
+    fetchChartOfAccounts().then(setAccounts);
+  }
+  useEffect(() => { reload(); }, []);
+
+  async function submit() {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      await createAccount({ name: name.trim(), type, cashBankKind });
+      show('Account added.');
+      setName('');
+      reload();
+    } catch (e) {
+      show(`Could not add account: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="max-w-2xl">
+      <button onClick={onBack} className="text-sm text-gray-500 mb-4 hover:text-gray-800">&larr; Back to Admin</button>
+      <h2 className="font-display font-semibold text-lg mb-4">Chart of Accounts</h2>
+
+      <Card className="p-4 mb-5 flex flex-wrap items-end gap-3" style={{ borderColor: THEME.line }}>
+        <div className="flex-1 min-w-[180px]">
+          <Input label="Account name" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div className="w-40">
+          <Select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="expense">Expense</option>
+            <option value="cash_bank">Cash / Bank</option>
+            <option value="sales">Sales</option>
+            <option value="purchase">Purchase</option>
+          </Select>
+        </div>
+        {type === 'cash_bank' && (
+          <div className="w-32">
+            <Select label="Kind" value={cashBankKind} onChange={(e) => setCashBankKind(e.target.value)}>
+              <option value="cash">Cash</option>
+              <option value="bank">Bank</option>
+            </Select>
+          </div>
+        )}
+        <Button onClick={submit} loading={saving}>Add account</Button>
+      </Card>
+
+      {accounts === null ? (
+        <div className="py-20 flex justify-center"><Spinner /></div>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {accounts.map((a) => (
+            <div key={a.id} className="flex items-center justify-between px-4 py-3">
+              <div>
+                <div className="font-medium text-sm">{a.name}</div>
+                <div className="text-xs text-gray-500 capitalize">
+                  {a.type.replace('_', ' ')}{a.cash_bank_kind ? ` · ${a.cash_bank_kind}` : ''}{a.is_system ? ' · system' : ''}
+                </div>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+      <ToastHost />
     </div>
   );
 }
