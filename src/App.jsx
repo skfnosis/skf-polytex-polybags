@@ -529,7 +529,7 @@ function Spinner({ size = 20 }) {
 function Card({ children, className = '', ...props }) {
   return (
     <div
-      className={cx('bg-white rounded-xl border', className)}
+      className={cx('bg-white rounded-xl border shadow-sm', className)}
       style={{ borderColor: THEME.line }}
       {...props}
     >
@@ -1289,9 +1289,12 @@ function LoginScreen() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{ background: `linear-gradient(180deg, #EEF2FF 0%, #F7F8FA 45%)` }}
+    >
       <form onSubmit={submit} className="w-full max-w-sm">
-        <div className="flex flex-col items-center mb-8 text-center">
+        <div className="flex flex-col items-center mb-6 text-center">
           <div className="flex items-center gap-3 mb-3">
             <img src={logoSkfPolytex} alt="SKF PolyTex" className="h-14 w-14 object-contain" />
             <img src={logoSkfPolybags} alt="SKF PolyBags" className="h-14 w-14 object-contain" />
@@ -1299,12 +1302,12 @@ function LoginScreen() {
           <h1 className="font-display font-bold text-xl">SKF PolyTex &middot; SKF PolyBags</h1>
           <p className="text-sm text-gray-500 mt-1">Sign in to the ERP</p>
         </div>
-        <div className="space-y-3">
+        <Card className="p-6 space-y-4">
           <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
           <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           {error && <p className="text-sm" style={{ color: THEME.danger }}>{error}</p>}
-          <Button type="submit" className="w-full mt-2" loading={loading}>Sign in</Button>
-        </div>
+          <Button type="submit" className="w-full mt-1" loading={loading}>Sign in</Button>
+        </Card>
       </form>
     </div>
   );
@@ -1763,12 +1766,12 @@ function DashboardScreen() {
         <StatCard title="Payments Made" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(paymentsSummary.made)} />
       </div>
 
-      <SectionHeading>Expenses</SectionHeading>
-      <StatCard title="Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(summary?.expenses || 0)} />
-
-      <SectionHeading>Payables</SectionHeading>
-      <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
-        onClick={() => setPayablesModalOpen(true)} sub="Tap for vendor-wise balances" />
+      <SectionHeading>Expenses &amp; Payables</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard title="Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(summary?.expenses || 0)} />
+        <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
+          onClick={() => setPayablesModalOpen(true)} sub="Tap for vendor-wise balances" />
+      </div>
 
       <SectionHeading>Receivables</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
@@ -2039,6 +2042,9 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     setVendor(null);
     setVendorResetKey((k) => k + 1);
     setLinkedOrder(null);
+    setSupplierInvoiceNo('');
+    setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
+    setNarration('');
     lineRefs.current = {};
   }
 
@@ -2070,6 +2076,10 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
 
   async function applyLinkedOrder(order) {
     if (!order) { setLinkedOrder(null); return; }
+    const hasManualLines = lines.some((l) => l.itemId);
+    if (hasManualLines && !window.confirm('Loading this purchase order will replace the line items you already entered. Continue?')) {
+      return;
+    }
     try {
       const { items } = await fetchInvoiceWithItems(order.id);
       setLinkedOrder(order);
@@ -2283,7 +2293,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
                   <td className="px-3 py-2 w-28">{f.rate}</td>
                   <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
                   <td className="px-2 py-2 pt-4">
-                    <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                    <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
                       <X size={18} />
                     </button>
                   </td>
@@ -2302,7 +2312,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
             <Card key={i} className="p-3 space-y-3" style={{ borderColor: THEME.line }}>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-gray-500">Line {i + 1}</span>
-                <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
                   <X size={18} />
                 </button>
               </div>
@@ -2592,20 +2602,20 @@ function PurchaseOldList({ invoiceType }) {
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
               <div className="flex items-center gap-1">
-                <button onClick={() => handleView(row)} title="View" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
-                <button onClick={() => handlePrint(row)} title="Print" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportPdf(row)} title="Export PDF" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportExcel(row)} title="Export Excel" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
                 {canApprove && row.status === 'posted' && (
-                  <button onClick={() => setVoidTarget(row)} title="Void" className="p-2 rounded-lg hover:bg-red-50 text-red-500">
+                  <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
@@ -2752,6 +2762,8 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     setCustomer(null);
     setCustomerResetKey((k) => k + 1);
     setLinkedOrder(null);
+    setCustomerPoNo('');
+    setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
     lineRefs.current = {};
   }
 
@@ -2783,6 +2795,10 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
 
   async function applyLinkedOrder(order) {
     if (!order) { setLinkedOrder(null); return; }
+    const hasManualLines = lines.some((l) => l.itemId);
+    if (hasManualLines && !window.confirm('Loading this sale order will replace the line items you already entered. Continue?')) {
+      return;
+    }
     try {
       const { items } = await fetchInvoiceWithItems(order.id);
       setLinkedOrder(order);
@@ -3009,7 +3025,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
                   <td className="px-3 py-2 w-28">{f.rate}</td>
                   <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
                   <td className="px-2 py-2 pt-4">
-                    <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                    <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
                       <X size={18} />
                     </button>
                   </td>
@@ -3028,7 +3044,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
             <Card key={i} className="p-3 space-y-3" style={{ borderColor: THEME.line }}>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-gray-500">Line {i + 1}</span>
-                <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
                   <X size={18} />
                 </button>
               </div>
@@ -3271,20 +3287,20 @@ function SaleOldList({ invoiceType }) {
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
               <div className="flex items-center gap-1">
-                <button onClick={() => handleView(row)} title="View" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
-                <button onClick={() => handlePrint(row)} title="Print" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportPdf(row)} title="Export PDF" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportExcel(row)} title="Export Excel" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
                 {canApprove && row.status === 'posted' && (
-                  <button onClick={() => setVoidTarget(row)} title="Void" className="p-2 rounded-lg hover:bg-red-50 text-red-500">
+                  <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
@@ -3634,20 +3650,20 @@ function VoucherOldList({ tab }) {
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.amount)}</div>
               <div className="flex items-center gap-1">
-                <button onClick={() => setViewPayment(row)} title="View" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => setViewPayment(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
-                <button onClick={() => handlePrint(row)} title="Print" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportPdf(row)} title="Export PDF" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportExcel(row)} title="Export Excel" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
                 {canApprove && row.status === 'posted' && (
-                  <button onClick={() => setVoidTarget(row)} title="Void" className="p-2 rounded-lg hover:bg-red-50 text-red-500">
+                  <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
@@ -3846,7 +3862,7 @@ function JournalVoucherEntryForm({ onSavedClose }) {
                 </td>
                 <td className="px-2 py-2 pt-4">
                   {lines.length > 2 && (
-                    <button onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                    <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
                       <X size={18} />
                     </button>
                   )}
@@ -4019,20 +4035,20 @@ function JournalVoucherOldList() {
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
               <div className="flex items-center gap-1">
-                <button onClick={() => handleView(row)} title="View" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
-                <button onClick={() => handlePrint(row)} title="Print" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportPdf(row)} title="Export PDF" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
-                <button onClick={() => handleExportExcel(row)} title="Export Excel" className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+                <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
                 {canApprove && row.status === 'posted' && (
-                  <button onClick={() => setVoidTarget(row)} title="Void" className="p-2 rounded-lg hover:bg-red-50 text-red-500">
+                  <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
