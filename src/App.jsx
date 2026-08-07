@@ -3,7 +3,6 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
-  Package, Percent,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import jsPDF from 'jspdf';
@@ -79,9 +78,9 @@ function cx(...parts) {
   return parts.filter(Boolean).join(' ');
 }
 
-// Purchase/Sales module units: fabric -> rolls, poly bags -> bags, kg as the common alternate.
-function purchaseUnitOptionsFor(category) {
-  return category === 'fabric' ? ['rolls', 'kg', 'meters'] : ['bags', 'kg', 'pieces'];
+// Purchase/Sales module units: just KG and PCS, per the brief.
+function purchaseUnitOptionsFor() {
+  return ['KG', 'PCS'];
 }
 
 // ============================================================================
@@ -220,6 +219,19 @@ async function updateAppSettings({ lowCashThreshold, highPayablesThreshold }) {
   if (error) throw error;
 }
 
+async function fetchAccountLedger(accountId, { from, to } = {}) {
+  let q = supabase.from('ledger_entries').select('*, parties(name)').eq('account_id', accountId);
+  if (from) q = q.gte('entry_date', from);
+  if (to) q = q.lte('entry_date', to);
+  const { data, error } = await q.order('entry_date').order('created_at');
+  if (error) throw error;
+  let running = 0;
+  return (data || []).map((r) => {
+    running += Number(r.debit) - Number(r.credit);
+    return { ...r, running_balance: running };
+  });
+}
+
 async function fetchCashBankBalances() {
   const { data: accounts, error } = await supabase.from('chart_of_accounts').select().eq('type', 'cash_bank');
   if (error) throw error;
@@ -265,18 +277,6 @@ async function fetchPartyBalances({ type, positiveOnly = false } = {}) {
   const { data, error } = await q.order('balance', { ascending: false });
   if (error) throw error;
   return positiveOnly ? (data || []).filter((r) => r.balance > 0) : (data || []);
-}
-
-async function fetchStockWithValue() {
-  const [{ data: stock, error: e1 }, { data: items, error: e2 }] = await Promise.all([
-    supabase.from('v_stock_balance').select(),
-    supabase.from('items').select('id, manual_stock_value'),
-  ]);
-  if (e1) throw e1;
-  if (e2) throw e2;
-  const valueById = {};
-  (items || []).forEach((i) => { valueById[i.id] = i.manual_stock_value; });
-  return (stock || []).map((s) => ({ ...s, manual_stock_value: valueById[s.item_id] }));
 }
 
 async function fetchPaymentsSummary({ from, to }) {
@@ -1142,6 +1142,14 @@ function LoginScreen() {
 // APP SHELL — sidebar nav built from the signed-in user's visible pages.
 // ============================================================================
 
+const NAV_GROUPS = [
+  { label: 'Dashboard', keys: ['dashboard'] },
+  { label: 'Entry', keys: ['entry_sale', 'entry_purchase', 'entry_expense'] },
+  { label: 'Reports', keys: ['reports'] },
+  { label: 'Party Master', keys: ['party_master'] },
+  { label: 'Admin', keys: ['settings'] },
+];
+
 function AppShell() {
   const { profile, visiblePages, signOut, authError } = useAuth();
   const [current, setCurrent] = useState(null);
@@ -1152,13 +1160,14 @@ function AppShell() {
     if (current && !visiblePages.includes(current) && visiblePages.length > 0) setCurrent(visiblePages[0]);
   }, [visiblePages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const pages = PAGES.filter((p) => visiblePages.includes(p.key));
-  const activePage = PAGES.find((p) => p.key === current);
+  const visibleGroups = NAV_GROUPS
+    .map((g) => ({ ...g, keys: g.keys.filter((k) => visiblePages.includes(k)) }))
+    .filter((g) => g.keys.length > 0);
 
   if (visiblePages.length === 0) {
     return (
       <div className="min-h-screen flex flex-col">
-        <TopBar profile={profile} onSignOut={signOut} pageLabel="" />
+        <TopNav profile={profile} onSignOut={signOut} groups={[]} current={current} onSelect={setCurrent} />
         <div className="flex-1 flex items-center justify-center text-center p-6 text-gray-500 text-sm">
           {authError ? (
             <div>
@@ -1166,7 +1175,7 @@ function AppShell() {
               <p className="text-xs bg-gray-100 rounded-lg px-3 py-2 inline-block max-w-md break-words">{authError}</p>
             </div>
           ) : (
-            <p>Your account has no pages enabled yet.<br />Ask an admin to grant access under Settings.</p>
+            <p>Your account has no pages enabled yet.<br />Ask an admin to grant access under Admin.</p>
           )}
         </div>
       </div>
@@ -1174,82 +1183,127 @@ function AppShell() {
   }
 
   return (
-    <div className="min-h-screen flex">
-      <aside className="hidden md:flex md:flex-col w-60 border-r bg-white" style={{ borderColor: THEME.line }}>
-        <SidebarContent pages={pages} current={current} onSelect={setCurrent} />
-      </aside>
-
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-40 md:hidden">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setMobileNavOpen(false)} />
-          <aside className="absolute left-0 top-0 bottom-0 w-64 bg-white">
-            <SidebarContent pages={pages} current={current} onSelect={(k) => { setCurrent(k); setMobileNavOpen(false); }} />
-          </aside>
-        </div>
-      )}
-
-      <div className="flex-1 flex flex-col min-w-0">
-        <TopBar
-          profile={profile}
-          onSignOut={signOut}
-          pageLabel={activePage?.label}
-          onMenuClick={() => setMobileNavOpen(true)}
-        />
-        <main className="flex-1 p-4 md:p-6 overflow-auto">
-          <PageRouter page={current} />
-        </main>
-      </div>
+    <div className="min-h-screen flex flex-col">
+      <TopNav
+        profile={profile} onSignOut={signOut} groups={visibleGroups}
+        current={current} onSelect={setCurrent}
+        mobileNavOpen={mobileNavOpen} onMenuClick={() => setMobileNavOpen((v) => !v)}
+      />
+      <main className="flex-1 p-4 md:p-6 overflow-auto">
+        <PageRouter page={current} />
+      </main>
     </div>
   );
 }
 
-function SidebarContent({ pages, current, onSelect }) {
+function TopNav({ profile, onSignOut, groups, current, onSelect, mobileNavOpen, onMenuClick }) {
   return (
-    <>
-      <div className="px-5 py-5 border-b" style={{ borderColor: THEME.line }}>
-        <div className="font-display font-bold">SKF ERP</div>
-        <div className="text-xs" style={{ color: THEME.navTextMuted }}>PolyTex &middot; PolyBags</div>
-      </div>
-      <nav className="flex-1 p-3 space-y-1">
-        {pages.map((p) => {
-          const Icon = p.icon;
-          const active = current === p.key;
-          return (
-            <button
-              key={p.key}
-              onClick={() => onSelect(p.key)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition"
-              style={active ? { backgroundColor: '#EEF2FF', color: THEME.blue } : { color: THEME.ink }}
-            >
-              <Icon size={18} />
-              {p.label}
+    <header className="border-b bg-white sticky top-0 z-30" style={{ borderColor: THEME.line }}>
+      <div className="h-16 flex items-center justify-between px-4 md:px-6">
+        <div className="flex items-center gap-6">
+          <div>
+            <div className="font-display font-bold leading-tight">SKF ERP</div>
+            <div className="text-xs" style={{ color: THEME.navTextMuted }}>PolyTex &middot; PolyBags</div>
+          </div>
+          <nav className="hidden md:flex items-center gap-1">
+            {groups.map((g) => (
+              <NavGroupButton key={g.label} group={g} current={current} onSelect={onSelect} />
+            ))}
+          </nav>
+        </div>
+        <div className="flex items-center gap-3">
+          {profile && <span className="text-sm text-gray-600 hidden sm:inline">{profile.full_name}</span>}
+          <button onClick={onSignOut} className="text-gray-400 hover:text-gray-700" title="Sign out">
+            <LogOut size={18} />
+          </button>
+          {groups.length > 0 && (
+            <button className="md:hidden text-gray-500" onClick={onMenuClick}>
+              <Menu size={22} />
             </button>
-          );
-        })}
-      </nav>
-    </>
+          )}
+        </div>
+      </div>
+
+      {mobileNavOpen && groups.length > 0 && (
+        <nav className="md:hidden border-t px-3 py-3 space-y-1" style={{ borderColor: THEME.line }}>
+          {groups.flatMap((g) => g.keys.map((k) => {
+            const page = PAGES.find((p) => p.key === k);
+            const Icon = page.icon;
+            const active = current === k;
+            return (
+              <button
+                key={k}
+                onClick={() => onSelect(k)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition"
+                style={active ? { backgroundColor: '#EEF2FF', color: THEME.blue } : { color: THEME.ink }}
+              >
+                <Icon size={18} />
+                {g.keys.length > 1 ? `${g.label} — ${page.label}` : page.label}
+              </button>
+            );
+          }))}
+        </nav>
+      )}
+    </header>
   );
 }
 
-function TopBar({ profile, onSignOut, pageLabel, onMenuClick }) {
+function NavGroupButton({ group, current, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef(null);
+  const pages = group.keys.map((k) => PAGES.find((p) => p.key === k));
+  const active = group.keys.includes(current);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  if (pages.length === 1) {
+    return (
+      <button
+        onClick={() => onSelect(pages[0].key)}
+        className="px-3 py-2 rounded-lg text-sm font-medium transition"
+        style={active ? { backgroundColor: '#EEF2FF', color: THEME.blue } : { color: THEME.ink }}
+      >
+        {group.label}
+      </button>
+    );
+  }
+
   return (
-    <header className="h-16 border-b bg-white flex items-center justify-between px-4 md:px-6" style={{ borderColor: THEME.line }}>
-      <div className="flex items-center gap-3">
-        {onMenuClick && (
-          <button className="md:hidden text-gray-500" onClick={onMenuClick}>
-            <Menu size={22} />
-          </button>
-        )}
-        <span className="font-display font-semibold">SKF ERP</span>
-        {pageLabel && <span className="text-gray-400 hidden sm:inline">/ {pageLabel}</span>}
-      </div>
-      <div className="flex items-center gap-3">
-        {profile && <span className="text-sm text-gray-600 hidden sm:inline">{profile.full_name}</span>}
-        <button onClick={onSignOut} className="text-gray-400 hover:text-gray-700" title="Sign out">
-          <LogOut size={18} />
-        </button>
-      </div>
-    </header>
+    <div className="relative" ref={boxRef}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="px-3 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1"
+        style={active ? { backgroundColor: '#EEF2FF', color: THEME.blue } : { color: THEME.ink }}
+      >
+        {group.label}
+        <ChevronRight size={14} className={cx('transition-transform', open && 'rotate-90')} />
+      </button>
+      {open && (
+        <div className="absolute z-40 mt-1 w-48 bg-white rounded-lg border shadow-lg py-1" style={{ borderColor: THEME.line }}>
+          {pages.map((p) => {
+            const Icon = p.icon;
+            const isActive = current === p.key;
+            return (
+              <button
+                key={p.key}
+                onClick={() => { onSelect(p.key); setOpen(false); }}
+                className={cx('w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50', isActive && 'font-medium')}
+                style={isActive ? { color: THEME.blue } : { color: THEME.ink }}
+              >
+                <Icon size={16} />
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1320,8 +1374,56 @@ function AccountListModal({ open, onClose, title, rows, renderRow }) {
   );
 }
 
+function AccountLedgerModal({ account, from, to, onClose }) {
+  const [rows, setRows] = useState(null);
+
+  useEffect(() => {
+    if (!account) { setRows(null); return; }
+    let alive = true;
+    setRows(null);
+    fetchAccountLedger(account.id, { from, to }).then((r) => { if (alive) setRows(r); });
+    return () => { alive = false; };
+  }, [account, from, to]);
+
+  return (
+    <Modal open={!!account} onClose={onClose} title={account ? `${account.name} — Ledger` : ''} width={640}>
+      {rows === null ? (
+        <div className="py-10 flex justify-center"><Spinner /></div>
+      ) : rows.length === 0 ? (
+        <EmptyState>No transactions in this range.</EmptyState>
+      ) : (
+        <Card className="overflow-auto" style={{ borderColor: THEME.line }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ backgroundColor: THEME.surface }}>
+                <th className="text-left px-3 py-2">Date</th>
+                <th className="text-left px-3 py-2">Party</th>
+                <th className="text-left px-3 py-2">Debit</th>
+                <th className="text-left px-3 py-2">Credit</th>
+                <th className="text-left px-3 py-2">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t" style={{ borderColor: THEME.line }}>
+                  <td className="px-3 py-2">{formatDate(r.entry_date)}</td>
+                  <td className="px-3 py-2">{r.parties?.name || '—'}</td>
+                  <td className="px-3 py-2">{r.debit > 0 ? formatPkr(r.debit) : ''}</td>
+                  <td className="px-3 py-2">{r.credit > 0 ? formatPkr(r.credit) : ''}</td>
+                  <td className="px-3 py-2 font-medium">{formatPkr(r.running_balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </Modal>
+  );
+}
+
 const MONTHLY_PROFIT_TOGGLES = [
   { key: 'total', label: 'Total Profit' },
+  { key: 'sales', label: 'Total Sales' },
   { key: 'skf_polytex', label: 'Fabric (PolyTex)' },
   { key: 'skf_polybags', label: 'Poly Bags' },
 ];
@@ -1349,13 +1451,12 @@ function DashboardScreen() {
   const [topCustomers, setTopCustomers] = useState([]);
   const [monthlyProfit, setMonthlyProfit] = useState([]);
   const [profitToggle, setProfitToggle] = useState('total');
-  const [stock, setStock] = useState([]);
   const [appSettings, setAppSettings] = useState({ low_cash_threshold: 0, high_payables_threshold: 0 });
 
   const [cashBankModalKind, setCashBankModalKind] = useState(null); // 'cash' | 'bank' | null
+  const [ledgerAccount, setLedgerAccount] = useState(null); // { id, name } | null
   const [receivablesModalOpen, setReceivablesModalOpen] = useState(false);
   const [payablesModalOpen, setPayablesModalOpen] = useState(false);
-  const [stockModalOpen, setStockModalOpen] = useState(false);
 
   useEffect(() => { fetchBrands().then(setBrands); }, []);
 
@@ -1379,16 +1480,15 @@ function DashboardScreen() {
       fetchPartyBalances({ type: 'customer', positiveOnly: true }),
       fetchTopCustomers({ from, to }),
       fetchMonthlyProfit({ from: graphFrom, to: today }),
-      fetchStockWithValue(),
       fetchAppSettings(),
-    ]).then(([s, fp, pp, cb, cf, ts, tcf, so, ps, rec, pay, debtors, customers, mp, sk, settings]) => {
+    ]).then(([s, fp, pp, cb, cf, ts, tcf, so, ps, rec, pay, debtors, customers, mp, settings]) => {
       if (!alive) return;
       setSummary(s); setFabricProfit(fp); setPolybagsProfit(pp);
       setCashBank(cb); setCashFlow(cf); setTodaySummary(ts); setTodayCashIn(tcf.cash_in);
       setSalesOverview(so); setPaymentsSummary(ps); setReceivables(rec);
       setPayables(pay.filter((p) => p.balance < 0));
       setCustomerBalances(debtors); setTopDebtors(debtors.slice(0, 5)); setTopCustomers(customers);
-      setMonthlyProfit(mp); setStock(sk); setAppSettings(settings);
+      setMonthlyProfit(mp); setAppSettings(settings);
     }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [from, to, brand]);
@@ -1407,23 +1507,27 @@ function DashboardScreen() {
   const polybagsMarginPct = polybagsProfit && polybagsProfit.sales > 0
     ? ((polybagsProfit.sales - polybagsProfit.purchase) / polybagsProfit.sales) * 100 : 0;
 
-  const fabricStock = stock.filter((s) => s.category === 'fabric');
-  const polybagsStock = stock.filter((s) => s.category === 'polybags');
-  const stockValueTotal = stock.reduce((s, r) => s + (Number(r.manual_stock_value) || 0), 0);
-
   const monthLabels = [...new Set(monthlyProfit.map((r) => r.month))];
   const graphData = monthLabels.map((month) => {
     const rows = monthlyProfit.filter((r) => r.month === month);
     const totalProfit = rows.reduce((s, r) => s + (Number(r.sales) - Number(r.purchase) - Number(r.expenses)), 0);
+    const totalSales = rows.reduce((s, r) => s + Number(r.sales), 0);
     const byBrand = {};
     rows.forEach((r) => { byBrand[r.brand_key] = Number(r.sales) - Number(r.purchase) - Number(r.expenses); });
     return {
       month: new Date(month).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
       total: totalProfit,
+      sales: totalSales,
       skf_polytex: byBrand.skf_polytex || 0,
       skf_polybags: byBrand.skf_polybags || 0,
     };
   });
+
+  function openCashBank(kind) {
+    const accounts = cashBank.filter((a) => a.cash_bank_kind === kind);
+    if (accounts.length === 1) setLedgerAccount({ id: accounts[0].id, name: accounts[0].name });
+    else setCashBankModalKind(kind);
+  }
 
   const alerts = [];
   if (receivables.overdue_receivables > 0) {
@@ -1457,36 +1561,23 @@ function DashboardScreen() {
       <SectionHeading>Cash &amp; Bank</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
         <StatCard title="Cash in Hand" icon={Wallet} color={THEME.cashGreen} value={formatPkr(cashTotal)}
-          onClick={() => setCashBankModalKind('cash')} sub="Tap for account-wise breakdown" />
+          onClick={() => openCashBank('cash')} sub="Tap for ledger" />
         <StatCard title="Bank Balance" icon={Landmark} color={THEME.cashGreen} value={formatPkr(bankTotal)}
-          onClick={() => setCashBankModalKind('bank')} sub="Tap for account-wise breakdown" />
-      </div>
-
-      <SectionHeading>Cash Flow Summary</SectionHeading>
-      <div className="grid grid-cols-2 gap-4">
-        <StatCard title="Total Cash In (Receipts)" icon={ArrowUpRight} color={THEME.success} value={formatPkr(cashFlow?.cash_in || 0)} />
-        <StatCard title="Total Cash Out" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(cashFlow?.cash_out || 0)} sub="Payments + Expenses" />
-      </div>
-
-      <SectionHeading>Today&apos;s Snapshot</SectionHeading>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Today Sales" icon={ArrowUpRight} color={THEME.success} value={formatPkr(todaySummary?.sales || 0)} />
-        <StatCard title="Today Profit" icon={ArrowUpRight} color={THEME.emerald} value={formatPkr(todaySummary?.profit || 0)} />
-        <StatCard title="Today Expenses" icon={ArrowDownRight} color={THEME.amber} value={formatPkr(todaySummary?.expenses || 0)} />
-        <StatCard title="Today Cash Received" icon={Wallet} color={THEME.cashGreen} value={formatPkr(todayCashIn)} />
+          onClick={() => openCashBank('bank')} sub="Tap for ledger" />
       </div>
 
       <SectionHeading>Sales Overview</SectionHeading>
-      <div className="grid grid-cols-2 gap-4">
-        {['polybags', 'fabric'].map((cat) => {
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard title="Total Sale" icon={ShoppingCart} color={THEME.success} value={formatPkr(salesTotal)} emphasize />
+        {['fabric', 'polybags'].map((cat) => {
           const row = salesOverview.find((r) => r.category === cat) || { quantity: 0, amount: 0 };
           return (
             <StatCard
               key={cat}
-              title={cat === 'polybags' ? 'Polybags Sales' : 'Fabric Sales'}
+              title={cat === 'polybags' ? 'Poly Bag Sale' : 'Fabric Sale'}
               icon={ShoppingCart} color={THEME.success}
               value={formatPkr(row.amount)}
-              sub={`${Number(row.quantity).toLocaleString()} ${cat === 'polybags' ? 'units' : 'kg / meters'}`}
+              sub={`${Number(row.quantity).toLocaleString()} ${cat === 'polybags' ? 'pcs' : 'kg'}`}
             />
           );
         })}
@@ -1498,6 +1589,13 @@ function DashboardScreen() {
         <StatCard title="Payments Made" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(paymentsSummary.made)} />
       </div>
 
+      <SectionHeading>Expenses</SectionHeading>
+      <StatCard title="Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(summary?.expenses || 0)} />
+
+      <SectionHeading>Payables</SectionHeading>
+      <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
+        onClick={() => setPayablesModalOpen(true)} sub="Tap for vendor-wise balances" />
+
       <SectionHeading>Receivables</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
         <StatCard title="Total Receivables" icon={Users} color={THEME.blue} value={formatPkr(receivables.total_receivables)}
@@ -1506,32 +1604,7 @@ function DashboardScreen() {
           highlight={receivables.overdue_receivables > 0} sub="30+ days unpaid (approximate)" />
       </div>
 
-      <SectionHeading>Payables</SectionHeading>
-      <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
-        onClick={() => setPayablesModalOpen(true)} sub="Tap for vendor-wise balances" />
-
-      <SectionHeading>Expenses</SectionHeading>
-      <StatCard title="Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(summary?.expenses || 0)} />
-
-      <SectionHeading>Profit</SectionHeading>
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-        <StatCard
-          title="Fabric Profit (PolyTex)" icon={ArrowUpRight} color={THEME.emerald}
-          value={formatPkr((fabricProfit?.sales || 0) - (fabricProfit?.purchase || 0))}
-          sub={`Gross margin ${fabricMarginPct.toFixed(1)}%`}
-        />
-        <StatCard
-          title="Poly Bags Profit" icon={ArrowUpRight} color={THEME.emerald}
-          value={formatPkr((polybagsProfit?.sales || 0) - (polybagsProfit?.purchase || 0))}
-          sub={`Gross margin ${polybagsMarginPct.toFixed(1)}%`}
-        />
-        <StatCard
-          title="Total Net Profit" icon={ArrowUpRight} color={summary?.profit >= 0 ? THEME.emerald : THEME.danger}
-          value={formatPkr(summary?.profit || 0)} emphasize sub="After all expenses"
-        />
-      </div>
-
-      <SectionHeading>Profit Trend</SectionHeading>
+      <SectionHeading>Sales &amp; Profit Growth</SectionHeading>
       <Card className="p-4" style={{ borderColor: THEME.line }}>
         <div className="flex flex-wrap gap-2 mb-4">
           {MONTHLY_PROFIT_TOGGLES.map((t) => (
@@ -1559,17 +1632,29 @@ function DashboardScreen() {
         </div>
       </Card>
 
-      <SectionHeading>Stock</SectionHeading>
-      <div className="grid grid-cols-2 gap-4">
+      <SectionHeading>Today&apos;s Snapshot</SectionHeading>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Today Sales" icon={ArrowUpRight} color={THEME.success} value={formatPkr(todaySummary?.sales || 0)} />
+        <StatCard title="Today Profit" icon={ArrowUpRight} color={THEME.emerald} value={formatPkr(todaySummary?.profit || 0)} />
+        <StatCard title="Today Expenses" icon={ArrowDownRight} color={THEME.amber} value={formatPkr(todaySummary?.expenses || 0)} />
+        <StatCard title="Today Cash Received" icon={Wallet} color={THEME.cashGreen} value={formatPkr(todayCashIn)} />
+      </div>
+
+      <SectionHeading>Profit</SectionHeading>
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard
-          title="Current Stock" icon={Package} color={THEME.blue}
-          value={`${stock.reduce((s, r) => s + Number(r.qty_on_hand), 0).toLocaleString()} units`}
-          onClick={() => setStockModalOpen(true)} sub="Tap for Polybags / Fabric split"
+          title="Fabric Profit (PolyTex)" icon={ArrowUpRight} color={THEME.emerald}
+          value={formatPkr((fabricProfit?.sales || 0) - (fabricProfit?.purchase || 0))}
+          sub={`Gross margin ${fabricMarginPct.toFixed(1)}%`}
         />
         <StatCard
-          title="Stock Value" icon={Package} color={THEME.blue}
-          value={formatPkr(stockValueTotal)}
-          sub="Manually set per item, not auto-valued"
+          title="Poly Bags Profit" icon={ArrowUpRight} color={THEME.emerald}
+          value={formatPkr((polybagsProfit?.sales || 0) - (polybagsProfit?.purchase || 0))}
+          sub={`Gross margin ${polybagsMarginPct.toFixed(1)}%`}
+        />
+        <StatCard
+          title="Total Net Profit" icon={ArrowUpRight} color={summary?.profit >= 0 ? THEME.emerald : THEME.danger}
+          value={formatPkr(summary?.profit || 0)} emphasize sub="After all expenses"
         />
       </div>
 
@@ -1614,12 +1699,18 @@ function DashboardScreen() {
         title={cashBankModalKind === 'cash' ? 'Cash accounts' : 'Bank accounts'}
         rows={cashBank.filter((a) => a.cash_bank_kind === cashBankModalKind)}
         renderRow={(a) => (
-          <div key={a.id} className="flex items-center justify-between px-1 py-3">
+          <button
+            key={a.id}
+            className="w-full flex items-center justify-between px-1 py-3 text-left hover:opacity-70"
+            onClick={() => { setCashBankModalKind(null); setLedgerAccount({ id: a.id, name: a.name }); }}
+          >
             <span className="text-sm">{a.name}</span>
             <span className="text-sm font-semibold" style={{ color: THEME.cashGreen }}>{formatPkr(a.balance)}</span>
-          </div>
+          </button>
         )}
       />
+
+      <AccountLedgerModal account={ledgerAccount} from={from} to={to} onClose={() => setLedgerAccount(null)} />
 
       <AccountListModal
         open={receivablesModalOpen}
@@ -1647,27 +1738,6 @@ function DashboardScreen() {
         )}
       />
 
-      <Modal open={stockModalOpen} onClose={() => setStockModalOpen(false)} title="Stock by category" width={480}>
-        <div className="space-y-4">
-          {[{ label: 'Polybags stock', rows: polybagsStock }, { label: 'Fabric stock', rows: fabricStock }].map((g) => (
-            <div key={g.label}>
-              <div className="text-sm font-medium text-gray-700 mb-2">{g.label}</div>
-              {g.rows.length === 0 ? (
-                <p className="text-xs text-gray-500">No items yet.</p>
-              ) : (
-                <div className="divide-y" style={{ borderColor: THEME.line }}>
-                  {g.rows.map((r) => (
-                    <div key={r.item_id} className="flex items-center justify-between py-2 text-sm">
-                      <span>{r.name}</span>
-                      <span className="text-gray-500">{Number(r.qty_on_hand).toLocaleString()} {r.default_unit}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </Modal>
     </div>
   );
 }
@@ -1882,7 +1952,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     }
   }
 
-  function draftPrint() {
+  function buildDraft() {
     const pseudoInvoice = {
       invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: vendor?.name },
       invoice_type: invoiceType, supplier_invoice_no: supplierInvoiceNo,
@@ -1893,7 +1963,15 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
       amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0),
     }));
+    return { pseudoInvoice, pseudoItems };
+  }
+  function draftPrint() {
+    const { pseudoInvoice, pseudoItems } = buildDraft();
     printPdfDoc(buildPurchaseDocPdf(pseudoInvoice, pseudoItems));
+  }
+  function draftExportPdf() {
+    const { pseudoInvoice, pseudoItems } = buildDraft();
+    buildPurchaseDocPdf(pseudoInvoice, pseudoItems).save(`${pseudoInvoice.invoice_no}.pdf`);
   }
 
   useEffect(() => {
@@ -1975,7 +2053,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
 
       <div className="mb-5 max-w-md">
         <PartyPicker
-          type="supplier" category={brand.category} value={vendor} onChange={setVendor}
+          type="supplier" value={vendor} onChange={setVendor}
           resetKey={vendorResetKey} inputRef={vendorRef} label="Vendor"
           onEnterNext={() => getLineRefs(0).item.current?.focus()}
         />
@@ -2083,6 +2161,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
         <Button onClick={() => save(false)} loading={saving}>Save</Button>
         <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
         <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
+        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export PDF</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
@@ -2574,7 +2653,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     }
   }
 
-  function draftPrint() {
+  function buildDraft() {
     const pseudoInvoice = {
       invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: customer?.name },
       invoice_type: invoiceType, customer_po_no: customerPoNo,
@@ -2585,7 +2664,15 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
       amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0),
     }));
+    return { pseudoInvoice, pseudoItems };
+  }
+  function draftPrint() {
+    const { pseudoInvoice, pseudoItems } = buildDraft();
     printPdfDoc(buildSaleDocPdf(pseudoInvoice, pseudoItems));
+  }
+  function draftExportPdf() {
+    const { pseudoInvoice, pseudoItems } = buildDraft();
+    buildSaleDocPdf(pseudoInvoice, pseudoItems).save(`${pseudoInvoice.invoice_no}.pdf`);
   }
 
   useEffect(() => {
@@ -2677,7 +2764,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
 
       <div className="mb-5 max-w-md">
         <PartyPicker
-          type="customer" category={brand.category} value={customer} onChange={setCustomer}
+          type="customer" value={customer} onChange={setCustomer}
           resetKey={customerResetKey} inputRef={customerRef} label="Customer"
           onEnterNext={() => getLineRefs(0).item.current?.focus()}
         />
@@ -2785,6 +2872,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
         <Button onClick={() => save(false)} loading={saving}>Save</Button>
         <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
         <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
+        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export PDF</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
