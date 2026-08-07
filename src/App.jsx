@@ -311,7 +311,7 @@ async function fetchDashboardSummary({ from, to, brandKey }) {
 
 async function createInvoice({
   invoiceType, brandKey, category, partyId, invoiceDate, items,
-  supplierInvoiceNo, linkedOrderId, transport, loading, discount, tax, customerPoNo,
+  supplierInvoiceNo, linkedOrderId, transport, loading, discount, tax, customerPoNo, narration,
 }) {
   const { data, error } = await supabase.rpc('create_invoice', {
     p_invoice_type: invoiceType,
@@ -333,6 +333,7 @@ async function createInvoice({
     p_discount: Number(discount) || 0,
     p_tax: Number(tax) || 0,
     p_customer_po_no: customerPoNo || null,
+    p_narration: narration || null,
   });
   if (error) throw error;
   return data;
@@ -2007,6 +2008,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
   const [loadingCharge, setLoadingCharge] = useState('0');
   const [discount, setDiscount] = useState('0');
   const [tax, setTax] = useState('0');
+  const [narration, setNarration] = useState('');
 
   const dateRef = useRef(null);
   const vendorRef = useRef(null);
@@ -2092,6 +2094,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     setSupplierInvoiceNo('');
     setLinkedOrder(null);
     setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
+    setNarration('');
     lineRefs.current = {};
     requestAnimationFrame(() => dateRef.current?.focus());
   }
@@ -2112,6 +2115,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
         loading: isBill ? loadingCharge : undefined,
         discount: isBill ? discount : undefined,
         tax: isBill ? tax : undefined,
+        narration: isBill ? narration : undefined,
       });
       const { invoice } = await fetchInvoiceWithItems(id);
       show(`Saved. ${invoice.invoice_no} created.`);
@@ -2128,7 +2132,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
   function buildDraft() {
     const pseudoInvoice = {
       invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: vendor?.name },
-      invoice_type: invoiceType, supplier_invoice_no: supplierInvoiceNo,
+      invoice_type: invoiceType, supplier_invoice_no: supplierInvoiceNo, narration,
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
     };
@@ -2325,6 +2329,12 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
         </div>
       )}
 
+      {isBill && (
+        <div className="mt-3">
+          <Input label="Narration (optional)" value={narration} onChange={(e) => setNarration(e.target.value)} />
+        </div>
+      )}
+
       <div className="flex items-center justify-end gap-2 mt-5 mb-6">
         <span className="text-gray-500">{isBill ? 'Grand Total:' : 'Total:'}</span>
         <span className="text-xl font-bold" style={{ color: THEME.blue }}>{formatPkr(grandTotal)}</span>
@@ -2379,6 +2389,11 @@ function buildPurchaseDocPdf(invoice, items) {
     footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
   });
+  if (invoice.narration) {
+    doc.setFontSize(9);
+    doc.setTextColor(90);
+    doc.text(`Narration: ${invoice.narration}`, 14, doc.lastAutoTable.finalY + 8);
+  }
   return doc;
 }
 
@@ -2459,6 +2474,7 @@ function PurchaseViewModal({ doc, onClose }) {
             Tax: {formatPkr(invoice.tax_amount)} · Discount: {formatPkr(invoice.discount_amount)}
           </div>
         )}
+        {invoice.narration && <div className="text-gray-500">Narration: {invoice.narration}</div>}
         <div className="text-right font-bold" style={{ color: THEME.blue }}>Total: {formatPkr(invoice.total_amount)}</div>
       </div>
     </Modal>
