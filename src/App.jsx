@@ -1340,20 +1340,22 @@ function LoginScreen() {
 
   return (
     <div
-      className="min-h-screen flex items-center justify-center p-6"
+      className="min-h-screen flex flex-col items-center justify-center p-6"
       style={{ background: 'radial-gradient(circle at 50% 0%, #1A1F16 0%, #0B0C0A 55%)' }}
     >
-      <div className="w-full max-w-sm">
+      <div className="w-full max-w-sm flex-1 flex flex-col justify-center py-8">
+        <div className="text-center mb-6">
+          <p dir="rtl" lang="ar" className="font-arabic leading-loose text-sm" style={{ color: '#C7CDC5' }}>
+            اللَّهُمَّ صَلِّ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ كَمَا صَلَّيْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ،
+            اللَّهُمَّ بَارِكَ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ كَمَا بَارَكْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ
+          </p>
+        </div>
+
         <div className="flex flex-col items-center mb-6 text-center">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="h-14 w-14 rounded-2xl bg-white flex items-center justify-center overflow-hidden">
-              <img src={logoSkfPolytex} alt="SKF PolyTex" className="h-11 w-11 object-contain" />
-            </div>
-            <div className="h-14 w-14 rounded-2xl bg-white flex items-center justify-center overflow-hidden">
-              <img src={logoSkfPolybags} alt="SKF PolyBags" className="h-11 w-11 object-contain" />
-            </div>
+          <div className="h-16 w-16 rounded-2xl bg-white flex items-center justify-center overflow-hidden mb-4">
+            <img src={logoSkfPolytex} alt="SKF" className="h-12 w-12 object-contain" />
           </div>
-          <h1 className="font-display font-bold text-xl text-white">SKF PolyTex &middot; SKF PolyBags</h1>
+          <h1 className="font-display font-bold text-xl text-white">SKF ERP</h1>
           <p className="text-sm mt-1" style={{ color: '#9AA39A' }}>Sign in to the ERP</p>
         </div>
 
@@ -1373,14 +1375,9 @@ function LoginScreen() {
             </button>
           </Card>
         </form>
-
-        <div className="mt-6 pt-5 text-center" style={{ borderTop: '1px solid #262922' }}>
-          <p dir="rtl" lang="ar" className="font-arabic leading-loose text-sm" style={{ color: '#C7CDC5' }}>
-            اللَّهُمَّ صَلِّ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ كَمَا صَلَّيْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ،
-            اللَّهُمَّ بَارِكَ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ كَمَا بَارَكْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ
-          </p>
-        </div>
       </div>
+
+      <p className="text-xs pb-2" style={{ color: '#5B6158' }}>Software by SKFnosis &middot; Saad Islam Butt</p>
     </div>
   );
 }
