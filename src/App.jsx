@@ -638,9 +638,9 @@ function useToast() {
   }, []);
   const ToastHost = () =>
     toast ? (
-      <div className="fixed bottom-5 right-5 z-50">
+      <div className="fixed bottom-20 right-5 left-5 md:left-auto md:bottom-5 z-50">
         <div
-          className="rounded-lg px-4 py-3 text-sm text-white shadow-lg"
+          className="rounded-lg px-4 py-3 text-sm text-white shadow-lg md:ml-auto md:w-fit"
           style={{ backgroundColor: toast.tone === 'danger' ? THEME.danger : THEME.ink }}
         >
           {toast.message}
