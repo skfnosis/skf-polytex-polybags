@@ -154,7 +154,7 @@ async function fetchParties({ search = '', category = null, type = null } = {}) 
   return data;
 }
 
-async function createParty({ name, type, category, contact, address, openingBalance = 0 }) {
+async function createParty({ name, type, category, contact, address, openingBalance = 0, email, ntn, stn }) {
   const { data, error } = await supabase.rpc('create_party', {
     p_name: name,
     p_type: type,
@@ -162,9 +162,32 @@ async function createParty({ name, type, category, contact, address, openingBala
     p_contact: contact || null,
     p_address: address || null,
     p_opening_balance: openingBalance,
+    p_email: email || null,
+    p_ntn: ntn || null,
+    p_stn: stn || null,
   });
   if (error) throw error;
   return data;
+}
+
+async function updateParty({ id, name, contact, address, email, ntn, stn, category }) {
+  const { error } = await supabase.rpc('update_party', {
+    p_party_id: id,
+    p_name: name,
+    p_contact: contact || null,
+    p_address: address || null,
+    p_email: email || null,
+    p_ntn: ntn || null,
+    p_stn: stn || null,
+    p_category: category || null,
+  });
+  if (error) throw error;
+}
+
+async function fetchUnpostedDocuments() {
+  const { data, error } = await supabase.rpc('fetch_unposted_documents');
+  if (error) throw error;
+  return data || [];
 }
 
 async function fetchItems({ search = '', category = null } = {}) {
@@ -726,6 +749,9 @@ function AddPartyModal({ open, onClose, type, category, prefillName, onCreated }
   const [name, setName] = useState(prefillName || '');
   const [contact, setContact] = useState('');
   const [address, setAddress] = useState('');
+  const [email, setEmail] = useState('');
+  const [ntn, setNtn] = useState('');
+  const [stn, setStn] = useState('');
   const [saving, setSaving] = useState(false);
   const { show, ToastHost } = useToast();
 
@@ -735,8 +761,8 @@ function AddPartyModal({ open, onClose, type, category, prefillName, onCreated }
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const id = await createParty({ name: name.trim(), type, category: [category], contact, address });
-      onCreated({ id, name: name.trim(), type, category: [category], contact, address });
+      const id = await createParty({ name: name.trim(), type, category: [category], contact, address, email, ntn, stn });
+      onCreated({ id, name: name.trim(), type, category: [category], contact, address, email, ntn, stn });
     } catch (e) {
       show(`Could not add party: ${e.message}`, 'danger');
     } finally {
@@ -748,8 +774,13 @@ function AddPartyModal({ open, onClose, type, category, prefillName, onCreated }
     <Modal open={open} onClose={onClose} title={`New ${type === 'customer' ? 'Customer' : 'Supplier'}`}>
       <div className="space-y-3">
         <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-        <Input label="Phone / contact (optional)" value={contact} onChange={(e) => setContact(e.target.value)} />
+        <Input label="Mobile number (optional)" value={contact} onChange={(e) => setContact(e.target.value)} />
+        <Input label="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
         <Input label="Address (optional)" value={address} onChange={(e) => setAddress(e.target.value)} />
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="NTN (optional)" value={ntn} onChange={(e) => setNtn(e.target.value)} />
+          <Input label="STN (optional)" value={stn} onChange={(e) => setStn(e.target.value)} />
+        </div>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={submit} loading={saving}>Add</Button>
@@ -4317,7 +4348,7 @@ function PartiesTab() {
   }, [search, refreshKey]);
 
   if (selected) {
-    return <PartyStatementView party={selected} onBack={() => setSelected(null)} />;
+    return <PartyStatementView party={selected} onBack={() => setSelected(null)} onUpdated={() => setRefreshKey((k) => k + 1)} />;
   }
 
   const filtered = typeFilter ? parties.filter((p) => p.type === typeFilter) : parties;
@@ -4385,6 +4416,9 @@ function AddPartyFullModal({ open, onClose, onCreated }) {
   const [categories, setCategories] = useState(['fabric']);
   const [contact, setContact] = useState('');
   const [address, setAddress] = useState('');
+  const [email, setEmail] = useState('');
+  const [ntn, setNtn] = useState('');
+  const [stn, setStn] = useState('');
   const [opening, setOpening] = useState('0');
   const [saving, setSaving] = useState(false);
   const { show, ToastHost } = useToast();
@@ -4400,8 +4434,8 @@ function AddPartyFullModal({ open, onClose, onCreated }) {
     }
     setSaving(true);
     try {
-      await createParty({ name: name.trim(), type, category: categories, contact, address, openingBalance: Number(opening) || 0 });
-      setName(''); setContact(''); setAddress(''); setOpening('0');
+      await createParty({ name: name.trim(), type, category: categories, contact, address, email, ntn, stn, openingBalance: Number(opening) || 0 });
+      setName(''); setContact(''); setAddress(''); setEmail(''); setNtn(''); setStn(''); setOpening('0');
       onCreated();
     } catch (e) {
       show(`Could not save: ${e.message}`, 'danger');
@@ -4438,8 +4472,13 @@ function AddPartyFullModal({ open, onClose, onCreated }) {
           ))}
         </div>
         <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} />
-        <Input label="Contact" value={contact} onChange={(e) => setContact(e.target.value)} />
+        <Input label="Mobile number" value={contact} onChange={(e) => setContact(e.target.value)} />
+        <Input label="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <Input label="Address" value={address} onChange={(e) => setAddress(e.target.value)} />
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="NTN" value={ntn} onChange={(e) => setNtn(e.target.value)} />
+          <Input label="STN" value={stn} onChange={(e) => setStn(e.target.value)} />
+        </div>
         <Input
           label="Opening balance (PKR)"
           type="number"
@@ -4457,9 +4496,11 @@ function AddPartyFullModal({ open, onClose, onCreated }) {
   );
 }
 
-function PartyStatementView({ party, onBack }) {
+function PartyStatementView({ party: initialParty, onBack, onUpdated }) {
+  const [party, setParty] = useState(initialParty);
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showEdit, setShowEdit] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -4482,7 +4523,18 @@ function PartyStatementView({ party, onBack }) {
   return (
     <div>
       <button onClick={onBack} className="text-sm text-gray-500 mb-4 hover:text-gray-800">&larr; Back to parties</button>
-      <h2 className="font-display font-semibold text-lg mb-4">{party.name}</h2>
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="font-display font-semibold text-lg">{party.name}</h2>
+        <Button variant="ghost" onClick={() => setShowEdit(true)}>Edit details</Button>
+      </div>
+      <div className="text-sm text-gray-500 mb-4 space-y-0.5">
+        {party.contact && <div>Mobile: {party.contact}</div>}
+        {party.email && <div>Email: {party.email}</div>}
+        {party.address && <div>Address: {party.address}</div>}
+        {(party.ntn || party.stn) && (
+          <div>{party.ntn ? `NTN: ${party.ntn}` : ''}{party.ntn && party.stn ? ' · ' : ''}{party.stn ? `STN: ${party.stn}` : ''}</div>
+        )}
+      </div>
 
       {loading ? (
         <div className="py-20 flex justify-center"><Spinner /></div>
@@ -4499,7 +4551,68 @@ function PartyStatementView({ party, onBack }) {
           <ReportTable title={`${party.name} — Statement`} columns={['Date', 'Reference', 'Debit', 'Credit', 'Balance']} rows={rows} />
         </>
       )}
+
+      <EditPartyModal
+        open={showEdit}
+        party={party}
+        onClose={() => setShowEdit(false)}
+        onSaved={(updated) => { setParty(updated); setShowEdit(false); onUpdated?.(); }}
+      />
     </div>
+  );
+}
+
+function EditPartyModal({ open, party, onClose, onSaved }) {
+  const [name, setName] = useState('');
+  const [contact, setContact] = useState('');
+  const [address, setAddress] = useState('');
+  const [email, setEmail] = useState('');
+  const [ntn, setNtn] = useState('');
+  const [stn, setStn] = useState('');
+  const [saving, setSaving] = useState(false);
+  const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    if (!open) return;
+    setName(party.name || '');
+    setContact(party.contact || '');
+    setAddress(party.address || '');
+    setEmail(party.email || '');
+    setNtn(party.ntn || '');
+    setStn(party.stn || '');
+  }, [open, party]);
+
+  async function submit() {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      await updateParty({ id: party.id, name: name.trim(), contact, address, email, ntn, stn });
+      onSaved({ ...party, name: name.trim(), contact, address, email, ntn, stn });
+    } catch (e) {
+      show(`Could not save: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={`Edit ${party.type === 'customer' ? 'customer' : 'vendor'}`} width={440}>
+      <div className="space-y-3">
+        <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input label="Mobile number" value={contact} onChange={(e) => setContact(e.target.value)} />
+        <Input label="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <Input label="Address" value={address} onChange={(e) => setAddress(e.target.value)} />
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="NTN" value={ntn} onChange={(e) => setNtn(e.target.value)} />
+          <Input label="STN" value={stn} onChange={(e) => setStn(e.target.value)} />
+        </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} loading={saving}>Save</Button>
+        </div>
+      </div>
+      <ToastHost />
+    </Modal>
   );
 }
 
@@ -4564,46 +4677,99 @@ function TrialBalanceReport() {
 // SETTINGS + PERMISSIONS (admin only)
 // ============================================================================
 
+const ADMIN_TABS = [
+  { key: 'profile', label: 'Profile & Alerts' },
+  { key: 'users', label: 'Users' },
+  { key: 'audit', label: 'Voucher Audit' },
+];
+
 function SettingsScreen() {
   const { profile } = useAuth();
-  const [showPermissions, setShowPermissions] = useState(false);
-
-  if (showPermissions) return <PermissionsScreen onBack={() => setShowPermissions(false)} />;
+  const [tab, setTab] = useState('profile');
+  const tabs = profile?.is_admin ? ADMIN_TABS : ADMIN_TABS.filter((t) => t.key === 'profile');
 
   return (
-    <div className="max-w-xl space-y-4">
-      <Card className="p-4 flex items-center gap-3">
-        <div
-          className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0"
-          style={{ backgroundColor: THEME.blue }}
-        >
-          {profile?.full_name?.[0]?.toUpperCase() || '?'}
+    <div className="max-w-3xl">
+      {tabs.length > 1 && (
+        <div className="flex flex-wrap gap-2 mb-5">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className="px-3 py-1.5 rounded-full text-sm font-medium border"
+              style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
-        <div>
-          <div className="font-medium">{profile?.full_name}</div>
-          <div className="text-xs text-gray-500">@{profile?.username} &middot; {profile?.is_admin ? 'Admin' : 'Standard user'}</div>
-        </div>
-      </Card>
-
-      {profile?.is_admin && (
-        <button
-          onClick={() => setShowPermissions(true)}
-          className="w-full text-left"
-        >
-          <Card className="p-4 flex items-center justify-between hover:bg-gray-50">
-            <div className="flex items-center gap-3">
-              <ShieldCheck size={20} style={{ color: THEME.blue }} />
-              <div>
-                <div className="font-medium">User permissions</div>
-                <div className="text-xs text-gray-500">Grant View / Create / Edit / Approve per page, per user</div>
-              </div>
-            </div>
-            <ChevronRight size={18} className="text-gray-300" />
-          </Card>
-        </button>
       )}
 
-      {profile?.is_admin && <DashboardAlertSettings />}
+      {tab === 'profile' && (
+        <div className="max-w-xl space-y-4">
+          <Card className="p-4 flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0"
+              style={{ backgroundColor: THEME.blue }}
+            >
+              {profile?.full_name?.[0]?.toUpperCase() || '?'}
+            </div>
+            <div>
+              <div className="font-medium">{profile?.full_name}</div>
+              <div className="text-xs text-gray-500">@{profile?.username} &middot; {profile?.is_admin ? 'Admin' : 'Standard user'}</div>
+            </div>
+          </Card>
+          {profile?.is_admin && <DashboardAlertSettings />}
+        </div>
+      )}
+
+      {tab === 'users' && profile?.is_admin && <PermissionsScreen />}
+      {tab === 'audit' && profile?.is_admin && <VoucherAuditTab />}
+    </div>
+  );
+}
+
+function VoucherAuditTab() {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchUnpostedDocuments()
+      .then((r) => { if (alive) setRows(r); })
+      .catch((e) => { if (alive) setError(e.message); });
+    return () => { alive = false; };
+  }, []);
+
+  return (
+    <div>
+      <p className="text-sm text-gray-500 mb-4">
+        Every posted Bill, Voucher, and Journal Voucher writes its ledger entries in the same step it's saved —
+        this list should normally be empty. Anything shown here didn't hit the General Ledger / Trial Balance
+        the way it should and needs a look.
+      </p>
+      {error && <div className="text-sm mb-4" style={{ color: THEME.danger }}>Could not load: {error}</div>}
+      {rows === null ? (
+        <div className="py-20 flex justify-center"><Spinner /></div>
+      ) : rows.length === 0 ? (
+        <Card className="p-6 flex flex-col items-center text-center gap-2">
+          <ShieldCheck size={22} style={{ color: THEME.success }} />
+          <span className="text-sm text-gray-500">All posted documents are correctly reflected in the ledger.</span>
+        </Card>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {rows.map((r, i) => (
+            <div key={i} className="px-4 py-3">
+              <div className="flex items-center justify-between">
+                <div className="font-medium text-sm">{r.doc_type} {r.doc_no}</div>
+                <div className="text-sm font-semibold" style={{ color: THEME.danger }}>{formatPkr(r.amount)}</div>
+              </div>
+              <div className="text-xs text-gray-500">{formatDate(r.doc_date)} &middot; {r.party_name}</div>
+              <div className="text-xs mt-1" style={{ color: THEME.danger }}>{r.note} &middot; ledger total {formatPkr(r.ledger_total)}</div>
+            </div>
+          ))}
+        </Card>
+      )}
     </div>
   );
 }
@@ -4654,6 +4820,10 @@ function AccountsTab() {
               <option value="sales">Sales</option>
               <option value="purchase">Purchase</option>
               <option value="drawings">Drawings</option>
+              <option value="asset">Asset</option>
+              <option value="liability">Liability</option>
+              <option value="capital">Capital / Equity</option>
+              <option value="income">Income (other)</option>
             </Select>
           </div>
           {type === 'cash_bank' && (
@@ -4801,7 +4971,7 @@ function PermissionsScreen({ onBack }) {
 
   return (
     <div className="max-w-3xl">
-      <button onClick={onBack} className="text-sm text-gray-500 mb-4 hover:text-gray-800">&larr; Back to settings</button>
+      {onBack && <button onClick={onBack} className="text-sm text-gray-500 mb-4 hover:text-gray-800">&larr; Back to settings</button>}
       <h2 className="font-display font-semibold text-lg mb-4">User permissions</h2>
 
       <div className="max-w-sm mb-4">
