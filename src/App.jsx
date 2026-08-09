@@ -3,7 +3,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
-  BookOpen, Home,
+  BookOpen, Home, Package,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import jsPDF from 'jspdf';
@@ -45,6 +45,7 @@ const PAGES = [
   { key: 'entry_jv', label: 'General Voucher', icon: BookOpen },
   { key: 'entry_sale', label: 'Sales', icon: ShoppingCart },
   { key: 'entry_purchase', label: 'Purchase', icon: ClipboardList },
+  { key: 'item_master', label: 'Material Chart', icon: Package },
   { key: 'party_master', label: 'Chart of Accounts', icon: Users },
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
@@ -199,14 +200,27 @@ async function fetchItems({ search = '', category = null } = {}) {
   return data;
 }
 
-async function createItem({ name, category, defaultUnit }) {
+async function createItem({ name, category, defaultUnit, fabricGroup, composition }) {
   const { data, error } = await supabase.rpc('create_item', {
     p_name: name,
     p_category: category,
     p_default_unit: defaultUnit,
+    p_fabric_group: fabricGroup || null,
+    p_composition: composition || null,
   });
   if (error) throw error;
   return data;
+}
+
+async function updateItem({ id, name, defaultUnit, fabricGroup, composition }) {
+  const { error } = await supabase.rpc('update_item', {
+    p_item_id: id,
+    p_name: name,
+    p_default_unit: defaultUnit,
+    p_fabric_group: fabricGroup || null,
+    p_composition: composition || null,
+  });
+  if (error) throw error;
 }
 
 async function fetchOpenPurchaseOrders(partyId) {
@@ -901,11 +915,19 @@ function ItemPicker({ category, value, onChange, resetKey, inputRef, onEnterNext
   );
 }
 
+const FABRIC_GROUPS = [
+  { key: 'in_house', label: 'In House' },
+  { key: 'knitting_dying', label: 'Knitting + Dying' },
+];
+
 function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
   const [name, setName] = useState(prefillName || '');
   const [unit, setUnit] = useState(purchaseUnitOptionsFor(category)[0]);
+  const [fabricGroup, setFabricGroup] = useState(FABRIC_GROUPS[0].key);
+  const [composition, setComposition] = useState('');
   const [saving, setSaving] = useState(false);
   const { show, ToastHost } = useToast();
+  const isFabric = category === 'fabric';
 
   useEffect(() => { setName(prefillName || ''); }, [prefillName, open]);
   useEffect(() => { setUnit(purchaseUnitOptionsFor(category)[0]); }, [category, open]);
@@ -914,8 +936,12 @@ function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const id = await createItem({ name: name.trim(), category, defaultUnit: unit });
-      onCreated({ id, name: name.trim(), category, default_unit: unit });
+      const id = await createItem({
+        name: name.trim(), category, defaultUnit: unit,
+        fabricGroup: isFabric ? fabricGroup : null,
+        composition: isFabric ? composition : null,
+      });
+      onCreated({ id, name: name.trim(), category, default_unit: unit, fabric_group: isFabric ? fabricGroup : null, composition: isFabric ? composition : null });
     } catch (e) {
       show(`Could not add item: ${e.message}`, 'danger');
     } finally {
@@ -924,9 +950,30 @@ function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="New item / quality">
+    <Modal open={open} onClose={onClose} title={isFabric ? 'New fabric' : 'New item / quality'}>
       <div className="space-y-3">
+        {isFabric && (
+          <div>
+            <div className="text-sm font-medium mb-1.5" style={{ color: THEME.ink }}>Group</div>
+            <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+              {FABRIC_GROUPS.map((g) => (
+                <button
+                  key={g.key}
+                  type="button"
+                  onClick={() => setFabricGroup(g.key)}
+                  className="px-3 py-1.5 rounded-md text-sm font-medium"
+                  style={fabricGroup === g.key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        {isFabric && (
+          <Input label="Composition (optional)" placeholder="e.g. 65% Cotton, 35% Polyester" value={composition} onChange={(e) => setComposition(e.target.value)} />
+        )}
         <Select label="Default unit" value={unit} onChange={(e) => setUnit(e.target.value)}>
           {purchaseUnitOptionsFor(category).map((u) => <option key={u} value={u}>{u}</option>)}
         </Select>
@@ -1384,6 +1431,7 @@ const NAV_GROUPS = [
   { label: 'Entry', keys: ['entry_voucher', 'entry_jv'] },
   { label: 'Sale', keys: ['entry_sale'] },
   { label: 'Purchase', keys: ['entry_purchase'] },
+  { label: 'Material Chart', keys: ['item_master'] },
   { label: 'Chart of Accounts', keys: ['party_master'] },
   { label: 'Admin', keys: ['settings'] },
 ];
@@ -1567,6 +1615,7 @@ function PageRouter({ page, param }) {
     case 'entry_jv': return <JournalVoucherModule />;
     case 'entry_sale': return <SalesModule key={param} initialTab={param} />;
     case 'entry_purchase': return <PurchaseModule key={param} initialTab={param} />;
+    case 'item_master': return <MaterialChartScreen />;
     case 'party_master': return <ChartOfAccountsScreen key={param} initialTab={param} />;
     case 'settings': return <SettingsScreen />;
     default: return null;
@@ -4288,6 +4337,257 @@ function JournalVoucherOldList() {
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
       <ToastHost />
     </div>
+  );
+}
+
+// ============================================================================
+// MATERIAL CHART — browsable, category-wise Item Master (parallel to Chart
+// of Accounts). Guided "Add Fabric" flow: Category -> Group (In House /
+// Knitting + Dying, fabric only) -> Name -> Composition (fabric only) ->
+// Unit.
+// ============================================================================
+
+const MATERIAL_CATEGORIES = [
+  { key: null, label: 'All' },
+  { key: 'fabric', label: 'Fabric' },
+  { key: 'polybags', label: 'Poly Bags' },
+];
+
+function fabricGroupLabel(key) {
+  return FABRIC_GROUPS.find((g) => g.key === key)?.label || key;
+}
+
+function MaterialChartScreen() {
+  const [catFilter, setCatFilter] = useState(null);
+  const [search, setSearch] = useState('');
+  const [items, setItems] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    setItems(null);
+    fetchItems({ search, category: catFilter }).then((rows) => { if (alive) setItems(rows); });
+    return () => { alive = false; };
+  }, [search, catFilter, refreshKey]);
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end gap-3 mb-5">
+        <div className="flex-1 min-w-[220px]">
+          <Input label="Search material" placeholder="Type a name…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+          {MATERIAL_CATEGORIES.map((c) => (
+            <button
+              key={c.label}
+              onClick={() => setCatFilter(c.key)}
+              className="px-3 py-1.5 rounded-md text-sm font-medium"
+              style={catFilter === c.key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <Button icon={Plus} onClick={() => setShowAdd(true)}>Add Fabric</Button>
+      </div>
+
+      {items === null ? (
+        <div className="py-20 flex justify-center"><Spinner /></div>
+      ) : items.length === 0 ? (
+        <EmptyState>No materials found.</EmptyState>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {items.map((it) => (
+            <button
+              key={it.id}
+              onClick={() => setEditItem(it)}
+              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50"
+            >
+              <div>
+                <div className="font-medium text-sm">{it.name}</div>
+                <div className="text-xs text-gray-500">
+                  {it.category === 'fabric' ? 'Fabric' : 'Poly Bags'} &middot; {it.default_unit}
+                  {it.fabric_group ? ` · ${fabricGroupLabel(it.fabric_group)}` : ''}
+                  {it.composition ? ` · ${it.composition}` : ''}
+                </div>
+              </div>
+              <ChevronRight size={18} className="text-gray-300 flex-shrink-0" />
+            </button>
+          ))}
+        </Card>
+      )}
+
+      <AddMaterialModal open={showAdd} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); setRefreshKey((k) => k + 1); }} />
+      <EditMaterialModal item={editItem} onClose={() => setEditItem(null)} onSaved={() => { setEditItem(null); setRefreshKey((k) => k + 1); }} />
+    </div>
+  );
+}
+
+function AddMaterialModal({ open, onClose, onCreated }) {
+  const [category, setCategory] = useState('fabric');
+  const [fabricGroup, setFabricGroup] = useState(FABRIC_GROUPS[0].key);
+  const [name, setName] = useState('');
+  const [composition, setComposition] = useState('');
+  const [unit, setUnit] = useState(purchaseUnitOptionsFor('fabric')[0]);
+  const [saving, setSaving] = useState(false);
+  const { show, ToastHost } = useToast();
+  const isFabric = category === 'fabric';
+
+  useEffect(() => {
+    if (!open) return;
+    setCategory('fabric'); setFabricGroup(FABRIC_GROUPS[0].key);
+    setName(''); setComposition(''); setUnit(purchaseUnitOptionsFor('fabric')[0]);
+  }, [open]);
+
+  async function submit() {
+    if (!name.trim()) { show('Enter a name.', 'danger'); return; }
+    setSaving(true);
+    try {
+      await createItem({
+        name: name.trim(), category, defaultUnit: unit,
+        fabricGroup: isFabric ? fabricGroup : null,
+        composition: isFabric ? composition : null,
+      });
+      onCreated();
+    } catch (e) {
+      show(`Could not add material: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add Fabric" width={440}>
+      <div className="space-y-3">
+        <div>
+          <div className="text-sm font-medium mb-1.5" style={{ color: THEME.ink }}>Category</div>
+          <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+            {[{ k: 'fabric', l: 'Fabric' }, { k: 'polybags', l: 'Poly Bags' }].map((c) => (
+              <button
+                key={c.k}
+                type="button"
+                onClick={() => { setCategory(c.k); setUnit(purchaseUnitOptionsFor(c.k)[0]); }}
+                className="px-3 py-1.5 rounded-md text-sm font-medium"
+                style={category === c.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+              >
+                {c.l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {isFabric && (
+          <div>
+            <div className="text-sm font-medium mb-1.5" style={{ color: THEME.ink }}>Group</div>
+            <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+              {FABRIC_GROUPS.map((g) => (
+                <button
+                  key={g.key}
+                  type="button"
+                  onClick={() => setFabricGroup(g.key)}
+                  className="px-3 py-1.5 rounded-md text-sm font-medium"
+                  style={fabricGroup === g.key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+
+        {isFabric && (
+          <Input label="Composition (optional)" placeholder="e.g. 65% Cotton, 35% Polyester" value={composition} onChange={(e) => setComposition(e.target.value)} />
+        )}
+
+        <Select label="Unit" value={unit} onChange={(e) => setUnit(e.target.value)}>
+          {purchaseUnitOptionsFor(category).map((u) => <option key={u} value={u}>{u}</option>)}
+        </Select>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} loading={saving}>Add</Button>
+        </div>
+      </div>
+      <ToastHost />
+    </Modal>
+  );
+}
+
+function EditMaterialModal({ item, onClose, onSaved }) {
+  const [name, setName] = useState('');
+  const [fabricGroup, setFabricGroup] = useState(FABRIC_GROUPS[0].key);
+  const [composition, setComposition] = useState('');
+  const [unit, setUnit] = useState('KG');
+  const [saving, setSaving] = useState(false);
+  const { show, ToastHost } = useToast();
+  const isFabric = item?.category === 'fabric';
+
+  useEffect(() => {
+    if (!item) return;
+    setName(item.name || '');
+    setFabricGroup(item.fabric_group || FABRIC_GROUPS[0].key);
+    setComposition(item.composition || '');
+    setUnit(item.default_unit || 'KG');
+  }, [item]);
+
+  if (!item) return null;
+
+  async function submit() {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      await updateItem({
+        id: item.id, name: name.trim(), defaultUnit: unit,
+        fabricGroup: isFabric ? fabricGroup : null,
+        composition: isFabric ? composition : null,
+      });
+      onSaved();
+    } catch (e) {
+      show(`Could not save: ${e.message}`, 'danger');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open={!!item} onClose={onClose} title={`Edit ${isFabric ? 'fabric' : 'material'}`} width={440}>
+      <div className="space-y-3">
+        {isFabric && (
+          <div>
+            <div className="text-sm font-medium mb-1.5" style={{ color: THEME.ink }}>Group</div>
+            <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+              {FABRIC_GROUPS.map((g) => (
+                <button
+                  key={g.key}
+                  type="button"
+                  onClick={() => setFabricGroup(g.key)}
+                  className="px-3 py-1.5 rounded-md text-sm font-medium"
+                  style={fabricGroup === g.key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        {isFabric && (
+          <Input label="Composition (optional)" placeholder="e.g. 65% Cotton, 35% Polyester" value={composition} onChange={(e) => setComposition(e.target.value)} />
+        )}
+        <Select label="Unit" value={unit} onChange={(e) => setUnit(e.target.value)}>
+          {purchaseUnitOptionsFor(item.category).map((u) => <option key={u} value={u}>{u}</option>)}
+        </Select>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} loading={saving}>Save</Button>
+        </div>
+      </div>
+      <ToastHost />
+    </Modal>
   );
 }
 
