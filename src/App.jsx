@@ -1933,6 +1933,25 @@ function AddActionSheet({ open, onClose, onNavigate, visiblePages }) {
   );
 }
 
+function MobileListRow({ icon: Icon, iconBg, iconColor, title, subtitle, right, onClick }) {
+  const Comp = onClick ? 'button' : 'div';
+  return (
+    <Comp
+      onClick={onClick}
+      className={cx('w-full flex items-center gap-3 rounded-2xl bg-white p-3.5 shadow-sm', onClick && 'hover:bg-gray-50 text-left')}
+    >
+      <div className="h-10 w-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ backgroundColor: iconBg }}>
+        <Icon size={18} style={{ color: iconColor }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate">{title}</div>
+        {subtitle && <div className="text-xs text-gray-500 truncate">{subtitle}</div>}
+      </div>
+      {right}
+    </Comp>
+  );
+}
+
 function MobileHomeScreen({ onNavigate, visiblePages }) {
   const [from, setFrom] = useState(toDateInput(startOfMonth()));
   const [to, setTo] = useState(toDateInput(new Date()));
@@ -1980,54 +1999,69 @@ function MobileHomeScreen({ onNavigate, visiblePages }) {
           <span>Cash in Hand <span className="text-white font-medium">{formatPkr(cashTotal)}</span></span>
           <span>Bank Balance <span className="text-white font-medium">{formatPkr(bankTotal)}</span></span>
         </div>
-        <div className="flex items-center justify-between mt-6">
-          <button onClick={() => onNavigate('entry_voucher', 'crv')} className="flex flex-col items-center gap-1.5">
-            <div className="h-11 w-11 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}>
-              <ArrowDownRight size={18} className="text-white" />
-            </div>
-            <span className="text-[11px] text-white">Receipt</span>
+        <div className="flex items-center justify-between mt-6 gap-3">
+          <button
+            onClick={() => onNavigate('entry_voucher', 'crv')}
+            className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
+            style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
+          >
+            <ArrowDownRight size={16} /> Receipt
           </button>
-          <button onClick={() => setAddSheetOpen(true)} className="h-14 w-14 rounded-full flex items-center justify-center shadow-lg" style={{ backgroundColor: '#C6F135' }}>
-            <Plus size={26} style={{ color: '#0B0C0A' }} />
+          <button
+            onClick={() => setAddSheetOpen(true)}
+            className="h-12 w-12 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: '#14170F', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.18)' }}
+          >
+            <Plus size={22} className="text-white" />
           </button>
-          <button onClick={() => onNavigate('entry_voucher', 'cpv')} className="flex flex-col items-center gap-1.5">
-            <div className="h-11 w-11 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}>
-              <ArrowUpRight size={18} className="text-white" />
-            </div>
-            <span className="text-[11px] text-white">Payment</span>
+          <button
+            onClick={() => onNavigate('entry_voucher', 'cpv')}
+            className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
+            style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
+          >
+            <ArrowUpRight size={16} /> Payment
           </button>
         </div>
       </div>
 
       <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
 
-      {visiblePages.includes('party_master') && (
-        <button onClick={() => onNavigate('party_master', 'ledger')} className="w-full text-left">
-          <Card className="p-4 flex items-center justify-between hover:bg-gray-50">
-            <div className="flex items-center gap-3">
-              <BookOpen size={18} style={{ color: THEME.blue }} />
-              <span className="text-sm font-medium">General Ledger</span>
-            </div>
-            <ChevronRight size={18} className="text-gray-300" />
-          </Card>
-        </button>
-      )}
-
       <div>
-        <SectionHeading>Sale</SectionHeading>
-        <div className="grid grid-cols-2 gap-3">
-          <StatCard title="Fabric Sale" icon={ShoppingCart} color={THEME.success} value={formatPkr(fabric.amount)} />
-          <StatCard title="Poly Bag Sale" icon={ShoppingCart} color={THEME.success} value={formatPkr(polybags.amount)} />
-        </div>
-      </div>
-
-      <StatCard title="Total Receipt" icon={ArrowDownRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
-
-      <div>
-        <SectionHeading>Receivable &amp; Payable</SectionHeading>
-        <div className="grid grid-cols-2 gap-3">
-          <StatCard title="Total Receivables" icon={Users} color={THEME.blue} value={formatPkr(receivables.total_receivables)} />
-          <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)} />
+        <SectionHeading>Overview</SectionHeading>
+        <div className="space-y-2">
+          {visiblePages.includes('party_master') && (
+            <MobileListRow
+              icon={BookOpen} iconBg="#EEF2FF" iconColor={THEME.blue}
+              title="General Ledger" subtitle="Look up any party or account"
+              onClick={() => onNavigate('party_master', 'ledger')}
+              right={<ChevronRight size={18} className="text-gray-300" />}
+            />
+          )}
+          <MobileListRow
+            icon={ShoppingCart} iconBg="#E9F8F0" iconColor={THEME.success}
+            title="Fabric Sale" subtitle={`${formatDate(from)} – ${formatDate(to)}`}
+            right={<span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(fabric.amount)}</span>}
+          />
+          <MobileListRow
+            icon={ShoppingCart} iconBg="#E9F8F0" iconColor={THEME.success}
+            title="Poly Bag Sale" subtitle={`${formatDate(from)} – ${formatDate(to)}`}
+            right={<span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(polybags.amount)}</span>}
+          />
+          <MobileListRow
+            icon={ArrowDownRight} iconBg="#E9F8F0" iconColor={THEME.success}
+            title="Total Receipt" subtitle={`${formatDate(from)} – ${formatDate(to)}`}
+            right={<span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(paymentsSummary.received)}</span>}
+          />
+          <MobileListRow
+            icon={Users} iconBg="#EEF2FF" iconColor={THEME.blue}
+            title="Total Receivables" subtitle="All customers"
+            right={<span className="text-sm font-semibold" style={{ color: THEME.blue }}>{formatPkr(receivables.total_receivables)}</span>}
+          />
+          <MobileListRow
+            icon={Users} iconBg="#FBF3E5" iconColor={THEME.amber}
+            title="Total Payables" subtitle="All vendors"
+            right={<span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(payablesTotal)}</span>}
+          />
         </div>
       </div>
 
@@ -2041,31 +2075,34 @@ function MobileTabBar({ current, onNavigate, visiblePages }) {
   if (!visiblePages.includes('dashboard')) return null;
   return (
     <>
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t flex items-center justify-around h-16" style={{ borderColor: THEME.line }}>
+      <nav
+        className="md:hidden fixed bottom-4 inset-x-6 z-30 bg-white rounded-full shadow-lg border flex items-center justify-around h-14 px-3"
+        style={{ borderColor: THEME.line }}
+      >
         <button
           onClick={() => onNavigate('dashboard')}
-          className="flex flex-col items-center gap-1 flex-1 py-2"
-          style={{ color: current === 'dashboard' ? THEME.blue : THEME.navTextMuted }}
+          className="h-10 w-10 rounded-full flex items-center justify-center"
+          style={current === 'dashboard' ? { backgroundColor: '#EEF2FF', color: THEME.blue } : { color: THEME.navTextMuted }}
         >
           <Home size={20} />
-          <span className="text-[11px] font-medium">Home</span>
         </button>
-        <button onClick={() => setAddOpen(true)} className="flex-1 flex justify-center -mt-6">
-          <div className="h-12 w-12 rounded-full flex items-center justify-center shadow-lg" style={{ backgroundColor: THEME.blue }}>
-            <Plus size={22} className="text-white" />
-          </div>
+        <button
+          onClick={() => setAddOpen(true)}
+          className="h-11 w-11 rounded-full flex items-center justify-center"
+          style={{ backgroundColor: THEME.blue }}
+        >
+          <Plus size={20} className="text-white" />
         </button>
         {visiblePages.includes('party_master') ? (
           <button
             onClick={() => onNavigate('party_master')}
-            className="flex flex-col items-center gap-1 flex-1 py-2"
-            style={{ color: current === 'party_master' ? THEME.blue : THEME.navTextMuted }}
+            className="h-10 w-10 rounded-full flex items-center justify-center"
+            style={current === 'party_master' ? { backgroundColor: '#EEF2FF', color: THEME.blue } : { color: THEME.navTextMuted }}
           >
             <Users size={20} />
-            <span className="text-[11px] font-medium">Accounts</span>
           </button>
         ) : (
-          <div className="flex-1" />
+          <div className="h-10 w-10" />
         )}
       </nav>
       <AddActionSheet open={addOpen} onClose={() => setAddOpen(false)} onNavigate={onNavigate} visiblePages={visiblePages} />
