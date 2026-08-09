@@ -3,7 +3,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
-  BookOpen,
+  BookOpen, Home,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import jsPDF from 'jspdf';
@@ -45,9 +45,7 @@ const PAGES = [
   { key: 'entry_jv', label: 'General Voucher', icon: BookOpen },
   { key: 'entry_sale', label: 'Sales', icon: ShoppingCart },
   { key: 'entry_purchase', label: 'Purchase', icon: ClipboardList },
-  { key: 'entry_expense', label: 'Expense', icon: Receipt },
-  { key: 'reports', label: 'Reports', icon: BarChart3 },
-  { key: 'party_master', label: 'Party Master', icon: Users },
+  { key: 'party_master', label: 'Chart of Accounts', icon: Users },
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -255,20 +253,8 @@ async function fetchCashBankBalances() {
   return accounts.map((a) => ({ ...a, balance: balanceByAccount[a.id] || 0 }));
 }
 
-async function fetchCashFlow({ from, to }) {
-  const { data, error } = await supabase.rpc('dashboard_cashflow', { p_from: from, p_to: to });
-  if (error) throw error;
-  return data?.[0] || { cash_in: 0, cash_out: 0 };
-}
-
 async function fetchSalesOverview({ from, to }) {
   const { data, error } = await supabase.rpc('dashboard_sales_overview', { p_from: from, p_to: to });
-  if (error) throw error;
-  return data || [];
-}
-
-async function fetchTopCustomers({ from, to }) {
-  const { data, error } = await supabase.rpc('dashboard_top_customers', { p_from: from, p_to: to });
   if (error) throw error;
   return data || [];
 }
@@ -285,6 +271,25 @@ async function fetchReceivablesOverdue() {
   return data?.[0] || { total_receivables: 0, overdue_receivables: 0 };
 }
 
+async function fetchExpensesAndDrawings({ from, to }) {
+  const [{ data: accounts, error: e1 }, { data: entries, error: e2 }] = await Promise.all([
+    supabase.from('chart_of_accounts').select('id, type').in('type', ['expense', 'drawings']),
+    supabase.from('ledger_entries').select('account_id, debit, credit').gte('entry_date', from).lte('entry_date', to),
+  ]);
+  if (e1) throw e1;
+  if (e2) throw e2;
+  const typeById = {};
+  (accounts || []).forEach((a) => { typeById[a.id] = a.type; });
+  let expenses = 0;
+  let drawings = 0;
+  (entries || []).forEach((e) => {
+    const t = typeById[e.account_id];
+    if (t === 'expense') expenses += Number(e.debit) - Number(e.credit);
+    else if (t === 'drawings') drawings += Number(e.debit) - Number(e.credit);
+  });
+  return { expenses, drawings };
+}
+
 async function fetchPartyBalances({ type, positiveOnly = false } = {}) {
   let q = supabase.from('v_party_balances').select().eq('type', type);
   const { data, error } = await q.order('balance', { ascending: false });
@@ -299,14 +304,6 @@ async function fetchPaymentsSummary({ from, to }) {
   const received = (data || []).filter((p) => p.direction === 'receipt').reduce((s, p) => s + Number(p.amount), 0);
   const made = (data || []).filter((p) => p.direction === 'payment').reduce((s, p) => s + Number(p.amount), 0);
   return { received, made };
-}
-
-async function fetchDashboardSummary({ from, to, brandKey }) {
-  const { data, error } = await supabase.rpc('dashboard_summary', {
-    p_from: from, p_to: to, p_brand: brandKey || null,
-  });
-  if (error) throw error;
-  return data?.[0] || { sales: 0, purchase: 0, expenses: 0, profit: 0 };
 }
 
 async function createInvoice({
@@ -344,24 +341,6 @@ async function voidInvoice(invoiceId, reason) {
   if (error) throw error;
 }
 
-async function createExpense({ expenseDate, expenseAccountId, cashBankAccountId, brandKey, description, amount }) {
-  const { data, error } = await supabase.rpc('create_expense', {
-    p_expense_date: expenseDate,
-    p_expense_account_id: expenseAccountId,
-    p_cash_bank_account_id: cashBankAccountId,
-    p_brand_key: brandKey || null,
-    p_description: description,
-    p_amount: Number(amount),
-  });
-  if (error) throw error;
-  return data;
-}
-
-async function voidExpense(expenseId, reason) {
-  const { error } = await supabase.rpc('void_expense', { p_expense_id: expenseId, p_reason: reason });
-  if (error) throw error;
-}
-
 async function recordPayment({ paymentDate, partyId, direction, amount, method, cashBankAccountId, linkedInvoiceId, notes }) {
   const { data, error } = await supabase.rpc('record_payment', {
     p_payment_date: paymentDate,
@@ -385,13 +364,6 @@ async function fetchPayments({ direction, kind, from, to, partyId, voucherNo }) 
   const { data, error } = await q.order('payment_date');
   if (error) throw error;
   return kind ? (data || []).filter((r) => r.chart_of_accounts?.cash_bank_kind === kind) : data;
-}
-
-async function fetchAllVouchers({ from, to }) {
-  const { data, error } = await supabase.from('payments').select('*, parties(name), chart_of_accounts(name, cash_bank_kind)')
-    .gte('payment_date', from).lte('payment_date', to).order('payment_date');
-  if (error) throw error;
-  return data || [];
 }
 
 async function fetchPaymentById(id) {
@@ -458,16 +430,6 @@ async function fetchInvoices({ invoiceType, from, to, brandKey, partyId, invoice
   if (invoiceNo) q = q.ilike('invoice_no', `%${invoiceNo}%`);
   if (linkedOrderId) q = q.eq('linked_order_id', linkedOrderId);
   const { data, error } = await q.order('invoice_date');
-  if (error) throw error;
-  return data;
-}
-
-async function fetchExpenses({ from, to, brandKey }) {
-  let q = supabase.from('expenses')
-    .select('*, chart_of_accounts!expenses_expense_account_id_fkey(name)')
-    .gte('expense_date', from).lte('expense_date', to);
-  if (brandKey) q = q.eq('brand_key', brandKey);
-  const { data, error } = await q.order('expense_date');
   if (error) throw error;
   return data;
 }
@@ -1388,21 +1350,29 @@ function LoginScreen() {
 
 const NAV_GROUPS = [
   { label: 'Dashboard', keys: ['dashboard'] },
-  { label: 'Entry', keys: ['entry_voucher', 'entry_jv', 'entry_sale', 'entry_purchase', 'entry_expense'] },
-  { label: 'Reports', keys: ['reports'] },
-  { label: 'Party Master', keys: ['party_master'] },
+  { label: 'Entry', keys: ['entry_voucher', 'entry_jv'] },
+  { label: 'Sale', keys: ['entry_sale'] },
+  { label: 'Purchase', keys: ['entry_purchase'] },
+  { label: 'Chart of Accounts', keys: ['party_master'] },
   { label: 'Admin', keys: ['settings'] },
 ];
 
 function AppShell() {
   const { profile, visiblePages, signOut, authError } = useAuth();
   const [current, setCurrent] = useState(null);
+  const [pageParam, setPageParam] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     if (!current && visiblePages.length > 0) setCurrent(visiblePages[0]);
     if (current && !visiblePages.includes(current) && visiblePages.length > 0) setCurrent(visiblePages[0]);
   }, [visiblePages]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function go(pageKey, param = null) {
+    setCurrent(pageKey);
+    setPageParam(param);
+    setMobileNavOpen(false);
+  }
 
   const visibleGroups = NAV_GROUPS
     .map((g) => ({ ...g, keys: g.keys.filter((k) => visiblePages.includes(k)) }))
@@ -1411,7 +1381,7 @@ function AppShell() {
   if (visiblePages.length === 0) {
     return (
       <div className="min-h-screen flex flex-col">
-        <TopNav profile={profile} onSignOut={signOut} groups={[]} current={current} onSelect={setCurrent} />
+        <TopNav profile={profile} onSignOut={signOut} groups={[]} current={current} onSelect={go} />
         <div className="flex-1 flex items-center justify-center text-center p-6 text-gray-500 text-sm">
           {authError ? (
             <div>
@@ -1430,12 +1400,20 @@ function AppShell() {
     <div className="min-h-screen flex flex-col">
       <TopNav
         profile={profile} onSignOut={signOut} groups={visibleGroups}
-        current={current} onSelect={setCurrent}
+        current={current} onSelect={go}
         mobileNavOpen={mobileNavOpen} onMenuClick={() => setMobileNavOpen((v) => !v)}
       />
-      <main className="flex-1 p-4 md:p-6 overflow-auto">
-        <PageRouter page={current} />
+      <main className="flex-1 p-4 md:p-6 overflow-auto pb-24 md:pb-6">
+        {current === 'dashboard' ? (
+          <>
+            <div className="hidden md:block"><PageRouter page={current} param={pageParam} /></div>
+            <div className="md:hidden"><MobileHomeScreen onNavigate={go} visiblePages={visiblePages} /></div>
+          </>
+        ) : (
+          <PageRouter page={current} param={pageParam} />
+        )}
       </main>
+      <MobileTabBar current={current} onNavigate={go} visiblePages={visiblePages} />
     </div>
   );
 }
@@ -1551,16 +1529,14 @@ function NavGroupButton({ group, current, onSelect }) {
   );
 }
 
-function PageRouter({ page }) {
+function PageRouter({ page, param }) {
   switch (page) {
     case 'dashboard': return <DashboardScreen />;
-    case 'entry_voucher': return <VoucherModule />;
+    case 'entry_voucher': return <VoucherModule key={param} initialTab={param} />;
     case 'entry_jv': return <JournalVoucherModule />;
-    case 'entry_sale': return <SalesModule />;
-    case 'entry_purchase': return <PurchaseModule />;
-    case 'entry_expense': return <ExpenseScreen />;
-    case 'reports': return <ReportsScreen />;
-    case 'party_master': return <PartyMasterScreen />;
+    case 'entry_sale': return <SalesModule key={param} initialTab={param} />;
+    case 'entry_purchase': return <PurchaseModule key={param} initialTab={param} />;
+    case 'party_master': return <ChartOfAccountsScreen key={param} initialTab={param} />;
     case 'settings': return <SettingsScreen />;
     default: return null;
   }
@@ -1601,6 +1577,41 @@ function StatCard({ title, icon: Icon, color, value, sub, onClick, emphasize, hi
         {sub && <div className="text-xs text-gray-500 mt-1.5 leading-relaxed">{sub}</div>}
       </Card>
     </Wrapper>
+  );
+}
+
+// Combined-balance card: one big total (all accounts of this kind summed),
+// with each individual account listed underneath in smaller text when
+// there's more than one — e.g. two bank accounts still show one Bank
+// Balance card, not two. Single-account case just shows the big number.
+function CashBankCard({ title, icon: Icon, total, accounts, onSelectAccount }) {
+  return (
+    <Card className="p-4 h-full">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-medium text-gray-500">{title}</span>
+        {Icon && <Icon size={16} style={{ color: THEME.cashGreen }} />}
+      </div>
+      <div className="font-bold text-2xl" style={{ color: THEME.cashGreen }}>{formatPkr(total)}</div>
+      {accounts.length > 1 && (
+        <div className="mt-2 space-y-1">
+          {accounts.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => onSelectAccount(a)}
+              className="w-full flex items-center justify-between text-xs text-gray-500 hover:text-gray-800"
+            >
+              <span>{a.name}</span>
+              <span>{formatPkr(a.balance)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {accounts.length === 1 && (
+        <button onClick={() => onSelectAccount(accounts[0])} className="text-xs text-gray-500 mt-1.5 hover:text-gray-800">
+          Tap for ledger
+        </button>
+      )}
+    </Card>
   );
 }
 
@@ -1677,34 +1688,22 @@ const MONTHLY_PROFIT_TOGGLES = [
 function DashboardScreen() {
   const [from, setFrom] = useState(toDateInput(startOfMonth()));
   const [to, setTo] = useState(toDateInput(new Date()));
-  const [brand, setBrand] = useState(null);
-  const [brands, setBrands] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [summary, setSummary] = useState(null);
-  const [fabricProfit, setFabricProfit] = useState(null);
-  const [polybagsProfit, setPolybagsProfit] = useState(null);
   const [cashBank, setCashBank] = useState([]);
-  const [cashFlow, setCashFlow] = useState(null);
-  const [todaySummary, setTodaySummary] = useState(null);
-  const [todayCashIn, setTodayCashIn] = useState(0);
   const [salesOverview, setSalesOverview] = useState([]);
   const [paymentsSummary, setPaymentsSummary] = useState({ received: 0, made: 0 });
   const [receivables, setReceivables] = useState({ total_receivables: 0, overdue_receivables: 0 });
   const [payables, setPayables] = useState([]);
   const [customerBalances, setCustomerBalances] = useState([]);
-  const [topDebtors, setTopDebtors] = useState([]);
-  const [topCustomers, setTopCustomers] = useState([]);
+  const [expensesAndDrawings, setExpensesAndDrawings] = useState({ expenses: 0, drawings: 0 });
   const [monthlyProfit, setMonthlyProfit] = useState([]);
   const [profitToggle, setProfitToggle] = useState('total');
   const [appSettings, setAppSettings] = useState({ low_cash_threshold: 0, high_payables_threshold: 0 });
 
-  const [cashBankModalKind, setCashBankModalKind] = useState(null); // 'cash' | 'bank' | null
   const [ledgerAccount, setLedgerAccount] = useState(null); // { id, name } | null
   const [receivablesModalOpen, setReceivablesModalOpen] = useState(false);
   const [payablesModalOpen, setPayablesModalOpen] = useState(false);
-
-  useEffect(() => { fetchBrands().then(setBrands); }, []);
 
   useEffect(() => {
     let alive = true;
@@ -1712,46 +1711,37 @@ function DashboardScreen() {
     const today = toDateInput(new Date());
     const graphFrom = toDateInput(new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1));
     Promise.all([
-      fetchDashboardSummary({ from, to, brandKey: brand?.brand_key }),
-      fetchDashboardSummary({ from, to, brandKey: 'skf_polytex' }),
-      fetchDashboardSummary({ from, to, brandKey: 'skf_polybags' }),
       fetchCashBankBalances(),
-      fetchCashFlow({ from, to }),
-      fetchDashboardSummary({ from: today, to: today }),
-      fetchCashFlow({ from: today, to: today }),
       fetchSalesOverview({ from, to }),
       fetchPaymentsSummary({ from, to }),
       fetchReceivablesOverdue(),
       fetchPartyBalances({ type: 'supplier' }),
       fetchPartyBalances({ type: 'customer', positiveOnly: true }),
-      fetchTopCustomers({ from, to }),
+      fetchExpensesAndDrawings({ from, to }),
       fetchMonthlyProfit({ from: graphFrom, to: today }),
       fetchAppSettings(),
-    ]).then(([s, fp, pp, cb, cf, ts, tcf, so, ps, rec, pay, debtors, customers, mp, settings]) => {
+    ]).then(([cb, so, ps, rec, pay, debtors, ed, mp, settings]) => {
       if (!alive) return;
-      setSummary(s); setFabricProfit(fp); setPolybagsProfit(pp);
-      setCashBank(cb); setCashFlow(cf); setTodaySummary(ts); setTodayCashIn(tcf.cash_in);
+      setCashBank(cb);
       setSalesOverview(so); setPaymentsSummary(ps); setReceivables(rec);
       setPayables(pay.filter((p) => p.balance < 0));
-      setCustomerBalances(debtors); setTopDebtors(debtors.slice(0, 5)); setTopCustomers(customers);
+      setCustomerBalances(debtors);
+      setExpensesAndDrawings(ed);
       setMonthlyProfit(mp); setAppSettings(settings);
     }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [from, to, brand]);
+  }, [from, to]);
 
-  if (loading && !summary) {
+  if (loading && cashBank.length === 0) {
     return <div className="py-20 flex justify-center"><Spinner /></div>;
   }
 
-  const cashTotal = cashBank.filter((a) => a.cash_bank_kind === 'cash').reduce((s, a) => s + Number(a.balance), 0);
-  const bankTotal = cashBank.filter((a) => a.cash_bank_kind === 'bank').reduce((s, a) => s + Number(a.balance), 0);
+  const cashAccounts = cashBank.filter((a) => a.cash_bank_kind === 'cash');
+  const bankAccounts = cashBank.filter((a) => a.cash_bank_kind === 'bank');
+  const cashTotal = cashAccounts.reduce((s, a) => s + Number(a.balance), 0);
+  const bankTotal = bankAccounts.reduce((s, a) => s + Number(a.balance), 0);
   const payablesTotal = payables.reduce((s, p) => s - Number(p.balance), 0);
   const salesTotal = salesOverview.reduce((s, r) => s + Number(r.amount), 0);
-  const pendingAmount = salesTotal - paymentsSummary.received;
-  const fabricMarginPct = fabricProfit && fabricProfit.sales > 0
-    ? ((fabricProfit.sales - fabricProfit.purchase) / fabricProfit.sales) * 100 : 0;
-  const polybagsMarginPct = polybagsProfit && polybagsProfit.sales > 0
-    ? ((polybagsProfit.sales - polybagsProfit.purchase) / polybagsProfit.sales) * 100 : 0;
 
   const monthLabels = [...new Set(monthlyProfit.map((r) => r.month))];
   const graphData = monthLabels.map((month) => {
@@ -1769,12 +1759,6 @@ function DashboardScreen() {
     };
   });
 
-  function openCashBank(kind) {
-    const accounts = cashBank.filter((a) => a.cash_bank_kind === kind);
-    if (accounts.length === 1) setLedgerAccount({ id: accounts[0].id, name: accounts[0].name });
-    else setCashBankModalKind(kind);
-  }
-
   const alerts = [];
   if (receivables.overdue_receivables > 0) {
     alerts.push({ text: `${formatPkr(receivables.overdue_receivables)} in overdue receivables (30+ days).`, key: 'overdue' });
@@ -1788,10 +1772,7 @@ function DashboardScreen() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-end gap-4 mb-2">
-        <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
-        <BrandTabs brands={brands} value={brand} onChange={setBrand} allowAll />
-      </div>
+      <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
 
       {alerts.length > 0 && (
         <div className="mt-4 space-y-2">
@@ -1804,15 +1785,15 @@ function DashboardScreen() {
         </div>
       )}
 
+      {/* Row 1 — Cash & Bank */}
       <SectionHeading>Cash &amp; Bank</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
-        <StatCard title="Cash in Hand" icon={Wallet} color={THEME.cashGreen} value={formatPkr(cashTotal)}
-          onClick={() => openCashBank('cash')} sub="Tap for ledger" />
-        <StatCard title="Bank Balance" icon={Landmark} color={THEME.cashGreen} value={formatPkr(bankTotal)}
-          onClick={() => openCashBank('bank')} sub="Tap for ledger" />
+        <CashBankCard title="Cash in Hand" icon={Wallet} total={cashTotal} accounts={cashAccounts} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
+        <CashBankCard title="Bank Balance" icon={Landmark} total={bankTotal} accounts={bankAccounts} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
       </div>
 
-      <SectionHeading>Sales Overview</SectionHeading>
+      {/* Row 2 — Sale */}
+      <SectionHeading>Sale</SectionHeading>
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard title="Total Sale" icon={ShoppingCart} color={THEME.success} value={formatPkr(salesTotal)} emphasize />
         {['fabric', 'polybags'].map((cat) => {
@@ -1829,28 +1810,31 @@ function DashboardScreen() {
         })}
       </div>
 
-      <SectionHeading>Payments</SectionHeading>
+      {/* Row 3 — Receivable & Payable */}
+      <SectionHeading>Receivable &amp; Payable</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
-        <StatCard title="Payments Received" icon={ArrowUpRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
-        <StatCard title="Payments Made" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(paymentsSummary.made)} />
-      </div>
-
-      <SectionHeading>Expenses &amp; Payables</SectionHeading>
-      <div className="grid grid-cols-2 gap-4">
-        <StatCard title="Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(summary?.expenses || 0)} />
-        <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
+        <StatCard title="Total Receivable" icon={Users} color={THEME.blue} value={formatPkr(receivables.total_receivables)}
+          onClick={() => setReceivablesModalOpen(true)} sub="Tap for customer-wise balances" />
+        <StatCard title="Total Payable" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
           onClick={() => setPayablesModalOpen(true)} sub="Tap for vendor-wise balances" />
       </div>
 
-      <SectionHeading>Receivables</SectionHeading>
+      {/* Row 4 — Payment */}
+      <SectionHeading>Payment</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
-        <StatCard title="Total Receivables" icon={Users} color={THEME.blue} value={formatPkr(receivables.total_receivables)}
-          onClick={() => setReceivablesModalOpen(true)} sub="Tap for customer-wise balances" />
-        <StatCard title="Overdue Receivables" icon={AlertTriangle} color={THEME.danger} value={formatPkr(receivables.overdue_receivables)}
-          highlight={receivables.overdue_receivables > 0} sub="30+ days unpaid (approximate)" />
+        <StatCard title="Payment Received" icon={ArrowUpRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
+        <StatCard title="Payment Made" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(paymentsSummary.made)} />
       </div>
 
-      <SectionHeading>Sales &amp; Profit Growth</SectionHeading>
+      {/* Row 5 — Expense & Drawings */}
+      <SectionHeading>Expense &amp; Drawings</SectionHeading>
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard title="Total Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(expensesAndDrawings.expenses)} />
+        <StatCard title="Drawings" icon={Receipt} color={THEME.amber} value={formatPkr(expensesAndDrawings.drawings)} />
+      </div>
+
+      {/* Row 6 — Growth chart */}
+      <SectionHeading>Growth</SectionHeading>
       <Card className="p-4" style={{ borderColor: THEME.line }}>
         <div className="flex flex-wrap gap-2 mb-4">
           {MONTHLY_PROFIT_TOGGLES.map((t) => (
@@ -1877,84 +1861,6 @@ function DashboardScreen() {
           </ResponsiveContainer>
         </div>
       </Card>
-
-      <SectionHeading>Today&apos;s Snapshot</SectionHeading>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Today Sales" icon={ArrowUpRight} color={THEME.success} value={formatPkr(todaySummary?.sales || 0)} />
-        <StatCard title="Today Profit" icon={ArrowUpRight} color={THEME.emerald} value={formatPkr(todaySummary?.profit || 0)} />
-        <StatCard title="Today Expenses" icon={ArrowDownRight} color={THEME.amber} value={formatPkr(todaySummary?.expenses || 0)} />
-        <StatCard title="Today Cash Received" icon={Wallet} color={THEME.cashGreen} value={formatPkr(todayCashIn)} />
-      </div>
-
-      <SectionHeading>Profit</SectionHeading>
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-        <StatCard
-          title="Fabric Profit (PolyTex)" icon={ArrowUpRight} color={THEME.emerald}
-          value={formatPkr((fabricProfit?.sales || 0) - (fabricProfit?.purchase || 0))}
-          sub={`Gross margin ${fabricMarginPct.toFixed(1)}%`}
-        />
-        <StatCard
-          title="Poly Bags Profit" icon={ArrowUpRight} color={THEME.emerald}
-          value={formatPkr((polybagsProfit?.sales || 0) - (polybagsProfit?.purchase || 0))}
-          sub={`Gross margin ${polybagsMarginPct.toFixed(1)}%`}
-        />
-        <StatCard
-          title="Total Net Profit" icon={ArrowUpRight} color={summary?.profit >= 0 ? THEME.emerald : THEME.danger}
-          value={formatPkr(summary?.profit || 0)} emphasize sub="After all expenses"
-        />
-      </div>
-
-      <SectionHeading>Top Debtors</SectionHeading>
-      {topDebtors.length === 0 ? (
-        <EmptyState>No customers currently owe money.</EmptyState>
-      ) : (
-        <Card className="divide-y" style={{ borderColor: THEME.line }}>
-          {topDebtors.map((d) => (
-            <div key={d.party_id} className="flex items-center justify-between px-4 py-3">
-              <span className="text-sm font-medium">{d.name}</span>
-              <span className="text-sm font-semibold" style={{ color: THEME.danger }}>{formatPkr(d.balance)}</span>
-            </div>
-          ))}
-        </Card>
-      )}
-
-      <SectionHeading>Top Customers</SectionHeading>
-      {topCustomers.length === 0 ? (
-        <EmptyState>No sales in this range.</EmptyState>
-      ) : (
-        <Card className="divide-y" style={{ borderColor: THEME.line }}>
-          {topCustomers.map((c) => (
-            <div key={c.party_id} className="flex items-center justify-between px-4 py-3">
-              <span className="text-sm font-medium">{c.name}</span>
-              <span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(c.total_sales)}</span>
-            </div>
-          ))}
-        </Card>
-      )}
-
-      <SectionHeading>Sales vs Recovery</SectionHeading>
-      <div className="grid grid-cols-3 gap-4">
-        <StatCard title="Total Sales" icon={ShoppingCart} color={THEME.success} value={formatPkr(salesTotal)} />
-        <StatCard title="Total Received" icon={ArrowUpRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
-        <StatCard title="Pending Amount" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(Math.max(pendingAmount, 0))} />
-      </div>
-
-      <AccountListModal
-        open={!!cashBankModalKind}
-        onClose={() => setCashBankModalKind(null)}
-        title={cashBankModalKind === 'cash' ? 'Cash accounts' : 'Bank accounts'}
-        rows={cashBank.filter((a) => a.cash_bank_kind === cashBankModalKind)}
-        renderRow={(a) => (
-          <button
-            key={a.id}
-            className="w-full flex items-center justify-between px-1 py-3 text-left hover:opacity-70"
-            onClick={() => { setCashBankModalKind(null); setLedgerAccount({ id: a.id, name: a.name }); }}
-          >
-            <span className="text-sm">{a.name}</span>
-            <span className="text-sm font-semibold" style={{ color: THEME.cashGreen }}>{formatPkr(a.balance)}</span>
-          </button>
-        )}
-      />
 
       <AccountLedgerModal account={ledgerAccount} from={from} to={to} onClose={() => setLedgerAccount(null)} />
 
@@ -1989,6 +1895,185 @@ function DashboardScreen() {
 }
 
 // ============================================================================
+// MOBILE HOME — wallet-app-style home screen shown in place of the Dashboard
+// on small screens only (md:hidden); desktop keeps the row-based Dashboard
+// above. Paired with MobileTabBar for bottom navigation.
+// ============================================================================
+
+const QUICK_ADD_ACTIONS = [
+  { label: 'Sale', page: 'entry_sale', param: 'sale', icon: ShoppingCart },
+  { label: 'Sale Return', page: 'entry_sale', param: 'sale_return', icon: ShoppingCart },
+  { label: 'Purchase', page: 'entry_purchase', param: 'purchase', icon: ClipboardList },
+  { label: 'Purchase Return', page: 'entry_purchase', param: 'purchase_return', icon: ClipboardList },
+];
+
+function AddActionSheet({ open, onClose, onNavigate, visiblePages }) {
+  if (!open) return null;
+  const actions = QUICK_ADD_ACTIONS.filter((a) => visiblePages.includes(a.page));
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div className="relative w-full max-w-md bg-white rounded-t-2xl p-4 pb-8" onClick={(e) => e.stopPropagation()}>
+        <div className="h-1 w-10 bg-gray-300 rounded-full mx-auto mb-4" />
+        <div className="grid grid-cols-2 gap-3">
+          {actions.map((a) => (
+            <button
+              key={a.label}
+              onClick={() => { onNavigate(a.page, a.param); onClose(); }}
+              className="flex flex-col items-center gap-2 p-4 rounded-xl border hover:bg-gray-50"
+              style={{ borderColor: THEME.line }}
+            >
+              <a.icon size={22} style={{ color: THEME.blue }} />
+              <span className="text-sm font-medium">{a.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MobileHomeScreen({ onNavigate, visiblePages }) {
+  const [from, setFrom] = useState(toDateInput(startOfMonth()));
+  const [to, setTo] = useState(toDateInput(new Date()));
+  const [loading, setLoading] = useState(true);
+  const [cashBank, setCashBank] = useState([]);
+  const [salesOverview, setSalesOverview] = useState([]);
+  const [paymentsSummary, setPaymentsSummary] = useState({ received: 0, made: 0 });
+  const [receivables, setReceivables] = useState({ total_receivables: 0, overdue_receivables: 0 });
+  const [payables, setPayables] = useState([]);
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    Promise.all([
+      fetchCashBankBalances(),
+      fetchSalesOverview({ from, to }),
+      fetchPaymentsSummary({ from, to }),
+      fetchReceivablesOverdue(),
+      fetchPartyBalances({ type: 'supplier' }),
+    ]).then(([cb, so, ps, rec, pay]) => {
+      if (!alive) return;
+      setCashBank(cb); setSalesOverview(so); setPaymentsSummary(ps); setReceivables(rec);
+      setPayables(pay.filter((p) => p.balance < 0));
+    }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [from, to]);
+
+  if (loading && cashBank.length === 0) {
+    return <div className="py-20 flex justify-center"><Spinner /></div>;
+  }
+
+  const cashTotal = cashBank.filter((a) => a.cash_bank_kind === 'cash').reduce((s, a) => s + Number(a.balance), 0);
+  const bankTotal = cashBank.filter((a) => a.cash_bank_kind === 'bank').reduce((s, a) => s + Number(a.balance), 0);
+  const payablesTotal = payables.reduce((s, p) => s - Number(p.balance), 0);
+  const fabric = salesOverview.find((r) => r.category === 'fabric') || { amount: 0 };
+  const polybags = salesOverview.find((r) => r.category === 'polybags') || { amount: 0 };
+
+  return (
+    <div className="space-y-5 pb-4">
+      <div className="rounded-3xl p-6" style={{ background: 'radial-gradient(circle at 30% 0%, #1A1F16 0%, #0B0C0A 70%)' }}>
+        <div className="text-xs uppercase tracking-wide" style={{ color: '#9AA39A' }}>Total Balance</div>
+        <div className="text-3xl font-bold text-white mt-1">{formatPkr(cashTotal + bankTotal)}</div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs" style={{ color: '#9AA39A' }}>
+          <span>Cash in Hand <span className="text-white font-medium">{formatPkr(cashTotal)}</span></span>
+          <span>Bank Balance <span className="text-white font-medium">{formatPkr(bankTotal)}</span></span>
+        </div>
+        <div className="flex items-center justify-between mt-6">
+          <button onClick={() => onNavigate('entry_voucher', 'crv')} className="flex flex-col items-center gap-1.5">
+            <div className="h-11 w-11 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}>
+              <ArrowDownRight size={18} className="text-white" />
+            </div>
+            <span className="text-[11px] text-white">Receipt</span>
+          </button>
+          <button onClick={() => setAddSheetOpen(true)} className="h-14 w-14 rounded-full flex items-center justify-center shadow-lg" style={{ backgroundColor: '#C6F135' }}>
+            <Plus size={26} style={{ color: '#0B0C0A' }} />
+          </button>
+          <button onClick={() => onNavigate('entry_voucher', 'cpv')} className="flex flex-col items-center gap-1.5">
+            <div className="h-11 w-11 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}>
+              <ArrowUpRight size={18} className="text-white" />
+            </div>
+            <span className="text-[11px] text-white">Payment</span>
+          </button>
+        </div>
+      </div>
+
+      <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+
+      {visiblePages.includes('party_master') && (
+        <button onClick={() => onNavigate('party_master', 'ledger')} className="w-full text-left">
+          <Card className="p-4 flex items-center justify-between hover:bg-gray-50">
+            <div className="flex items-center gap-3">
+              <BookOpen size={18} style={{ color: THEME.blue }} />
+              <span className="text-sm font-medium">General Ledger</span>
+            </div>
+            <ChevronRight size={18} className="text-gray-300" />
+          </Card>
+        </button>
+      )}
+
+      <div>
+        <SectionHeading>Sale</SectionHeading>
+        <div className="grid grid-cols-2 gap-3">
+          <StatCard title="Fabric Sale" icon={ShoppingCart} color={THEME.success} value={formatPkr(fabric.amount)} />
+          <StatCard title="Poly Bag Sale" icon={ShoppingCart} color={THEME.success} value={formatPkr(polybags.amount)} />
+        </div>
+      </div>
+
+      <StatCard title="Total Receipt" icon={ArrowDownRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
+
+      <div>
+        <SectionHeading>Receivable &amp; Payable</SectionHeading>
+        <div className="grid grid-cols-2 gap-3">
+          <StatCard title="Total Receivables" icon={Users} color={THEME.blue} value={formatPkr(receivables.total_receivables)} />
+          <StatCard title="Total Payables" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)} />
+        </div>
+      </div>
+
+      <AddActionSheet open={addSheetOpen} onClose={() => setAddSheetOpen(false)} onNavigate={onNavigate} visiblePages={visiblePages} />
+    </div>
+  );
+}
+
+function MobileTabBar({ current, onNavigate, visiblePages }) {
+  const [addOpen, setAddOpen] = useState(false);
+  if (!visiblePages.includes('dashboard')) return null;
+  return (
+    <>
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t flex items-center justify-around h-16" style={{ borderColor: THEME.line }}>
+        <button
+          onClick={() => onNavigate('dashboard')}
+          className="flex flex-col items-center gap-1 flex-1 py-2"
+          style={{ color: current === 'dashboard' ? THEME.blue : THEME.navTextMuted }}
+        >
+          <Home size={20} />
+          <span className="text-[11px] font-medium">Home</span>
+        </button>
+        <button onClick={() => setAddOpen(true)} className="flex-1 flex justify-center -mt-6">
+          <div className="h-12 w-12 rounded-full flex items-center justify-center shadow-lg" style={{ backgroundColor: THEME.blue }}>
+            <Plus size={22} className="text-white" />
+          </div>
+        </button>
+        {visiblePages.includes('party_master') ? (
+          <button
+            onClick={() => onNavigate('party_master')}
+            className="flex flex-col items-center gap-1 flex-1 py-2"
+            style={{ color: current === 'party_master' ? THEME.blue : THEME.navTextMuted }}
+          >
+            <Users size={20} />
+            <span className="text-[11px] font-medium">Accounts</span>
+          </button>
+        ) : (
+          <div className="flex-1" />
+        )}
+      </nav>
+      <AddActionSheet open={addOpen} onClose={() => setAddOpen(false)} onNavigate={onNavigate} visiblePages={visiblePages} />
+    </>
+  );
+}
+
+// ============================================================================
 // PURCHASE MODULE — Purchase Order / Purchase Bill / Purchase Return, each
 // with a New (fast keyboard entry) and Old (browse/void/print/export) mode.
 //
@@ -2015,8 +2100,8 @@ function purchaseDocLabel(invoiceType) {
     : invoiceType === 'purchase_return' ? 'Purchase Return' : 'Purchase Bill';
 }
 
-function PurchaseModule() {
-  const [tab, setTab] = useState('purchase');
+function PurchaseModule({ initialTab }) {
+  const [tab, setTab] = useState(initialTab || 'purchase');
   const [mode, setMode] = useState('new');
 
   return (
@@ -2724,8 +2809,8 @@ function saleDocLabel(invoiceType) {
     : invoiceType === 'sale_return' ? 'Sale Return' : 'Sale Bill';
 }
 
-function SalesModule() {
-  const [tab, setTab] = useState('sale');
+function SalesModule({ initialTab }) {
+  const [tab, setTab] = useState(initialTab || 'sale');
   const [mode, setMode] = useState('new');
 
   return (
@@ -3403,8 +3488,8 @@ const VOUCHER_TABS = [
   { key: 'bpv', label: 'Bank Payment (BPV)', direction: 'payment', kind: 'bank' },
 ];
 
-function VoucherModule() {
-  const [tab, setTab] = useState('crv');
+function VoucherModule({ initialTab }) {
+  const [tab, setTab] = useState(initialTab || 'crv');
   const [mode, setMode] = useState('new');
   const active = VOUCHER_TABS.find((t) => t.key === tab);
 
@@ -4139,82 +4224,46 @@ function JournalVoucherOldList() {
 }
 
 // ============================================================================
-// EXPENSE ENTRY
+// CHART OF ACCOUNTS — merges what used to be Party Master, the Admin-only
+// ledger-account manager, and the Reports page's General Ledger / Trial
+// Balance into one screen with four tabs. Parties and system accounts are
+// really the same concept (every party has an auto-generated
+// chart_of_accounts row) — this screen is where you look up either kind of
+// account's ledger, not just parties.
 // ============================================================================
 
-function ExpenseScreen() {
-  const [accounts, setAccounts] = useState([]);
-  const [brands, setBrands] = useState([]);
-  const [date, setDate] = useState(toDateInput(new Date()));
-  const [expenseAccountId, setExpenseAccountId] = useState('');
-  const [cashBankAccountId, setCashBankAccountId] = useState('');
-  const [brand, setBrand] = useState(null);
-  const [description, setDescription] = useState('');
-  const [amount, setAmount] = useState('');
-  const [saving, setSaving] = useState(false);
-  const { show, ToastHost } = useToast();
+const COA_TABS = [
+  { key: 'parties', label: 'Parties' },
+  { key: 'accounts', label: 'Accounts' },
+  { key: 'ledger', label: 'General Ledger' },
+  { key: 'trial', label: 'Trial Balance' },
+];
 
-  useEffect(() => {
-    fetchChartOfAccounts().then(setAccounts);
-    fetchBrands().then(setBrands);
-  }, []);
-
-  const expenseAccounts = accounts.filter((a) => a.type === 'expense');
-  const cashBankAccounts = accounts.filter((a) => a.type === 'cash_bank');
-
-  async function save() {
-    const amt = Number(amount);
-    if (!expenseAccountId || !cashBankAccountId || !amt || amt <= 0) {
-      show('Fill in category, account, and a valid amount.', 'danger');
-      return;
-    }
-    setSaving(true);
-    try {
-      await createExpense({
-        expenseDate: date, expenseAccountId, cashBankAccountId,
-        brandKey: brand?.brand_key, description, amount: amt,
-      });
-      show('Expense saved.');
-      setDescription('');
-      setAmount('');
-    } catch (e) {
-      show(`Could not save: ${e.message}`, 'danger');
-    } finally {
-      setSaving(false);
-    }
-  }
-
+function ChartOfAccountsScreen({ initialTab }) {
+  const [tab, setTab] = useState(initialTab || 'parties');
   return (
-    <div className="max-w-lg">
-      <h2 className="font-display font-semibold text-lg mb-4">Expense</h2>
-      <div className="space-y-4">
-        <Input type="date" label="Date" value={date} onChange={(e) => setDate(e.target.value)} />
-        <Select label="Expense category" value={expenseAccountId} onChange={(e) => setExpenseAccountId(e.target.value)}>
-          <option value="">Select…</option>
-          {expenseAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </Select>
-        <Select label="Paid from" value={cashBankAccountId} onChange={(e) => setCashBankAccountId(e.target.value)}>
-          <option value="">Select…</option>
-          {cashBankAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </Select>
-        <div>
-          <BrandTabs brands={brands} value={brand} onChange={setBrand} allowAll />
-          <p className="text-xs text-gray-500 mt-1.5">"All brands" for general/shared expenses.</p>
-        </div>
-        <Input label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
-        <Input label="Amount (PKR)" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
-        <Button onClick={save} loading={saving}>Save Expense</Button>
+    <div>
+      <div className="flex flex-wrap gap-2 mb-5">
+        {COA_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className="px-3 py-1.5 rounded-full text-sm font-medium border"
+            style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
-      <ToastHost />
+      {tab === 'parties' && <PartiesTab />}
+      {tab === 'accounts' && <AccountsTab />}
+      {tab === 'ledger' && <GeneralLedgerTab />}
+      {tab === 'trial' && <TrialBalanceReport />}
     </div>
   );
 }
 
-// ============================================================================
-// PARTY MASTER + STATEMENT
-// ============================================================================
-
-function PartyMasterScreen() {
+function PartiesTab() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState(null);
   const [parties, setParties] = useState([]);
@@ -4427,146 +4476,6 @@ function referenceLabel(type) {
   }
 }
 
-// ============================================================================
-// REPORTS — Sale, Purchase, Expense, General Ledger, Trial Balance
-// ============================================================================
-
-const REPORT_TYPES = [
-  { key: 'sale', label: 'Sale Report' },
-  { key: 'purchase', label: 'Purchase Report' },
-  { key: 'expense', label: 'Expense Report' },
-  { key: 'vouchers', label: 'Vouchers' },
-  { key: 'ledger', label: 'General Ledger' },
-  { key: 'trial_balance', label: 'Trial Balance' },
-];
-
-function ReportsScreen() {
-  const [type, setType] = useState('sale');
-  const [from, setFrom] = useState(toDateInput(startOfMonth()));
-  const [to, setTo] = useState(toDateInput(new Date()));
-  const [brand, setBrand] = useState(null);
-  const [brands, setBrands] = useState([]);
-
-  useEffect(() => { fetchBrands().then(setBrands); }, []);
-
-  return (
-    <div>
-      <div className="flex flex-wrap gap-2 mb-5">
-        {REPORT_TYPES.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setType(t.key)}
-            className="px-3 py-1.5 rounded-full text-sm font-medium border"
-            style={type === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {type !== 'trial_balance' && (
-        <div className="flex flex-wrap items-end gap-4 mb-5">
-          <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
-          {type !== 'expense' && type !== 'vouchers' && <BrandTabs brands={brands} value={brand} onChange={setBrand} allowAll />}
-        </div>
-      )}
-
-      {type === 'sale' && <InvoiceReport invoiceType="sale" from={from} to={to} brand={brand} />}
-      {type === 'purchase' && <InvoiceReport invoiceType="purchase" from={from} to={to} brand={brand} />}
-      {type === 'expense' && <ExpenseReport from={from} to={to} />}
-      {type === 'vouchers' && <VoucherReport from={from} to={to} />}
-      {type === 'ledger' && <LedgerReport from={from} to={to} brand={brand} />}
-      {type === 'trial_balance' && <TrialBalanceReport />}
-    </div>
-  );
-}
-
-function InvoiceReport({ invoiceType, from, to, brand }) {
-  const [rows, setRows] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    setRows(null);
-    fetchInvoices({ invoiceType, from, to, brandKey: brand?.brand_key }).then((r) => { if (alive) setRows(r); });
-    return () => { alive = false; };
-  }, [invoiceType, from, to, brand]);
-
-  if (rows === null) return <div className="py-20 flex justify-center"><Spinner /></div>;
-
-  const total = rows.reduce((s, r) => s + Number(r.total_amount), 0);
-  const table = rows.map((r) => [
-    r.invoice_no, formatDate(r.invoice_date), r.parties?.name || '',
-    r.brand_key === 'skf_polytex' ? 'PolyTex' : 'PolyBags',
-    formatPkr(r.total_amount), r.status,
-  ]);
-
-  return (
-    <ReportTable
-      title={invoiceType === 'sale' ? 'Sale Report' : 'Purchase Report'}
-      brandLabel={brand?.display_name}
-      brandLogo={brand?.brand_key ? BRAND_LOGOS[brand.brand_key] : null}
-      columns={['Invoice #', 'Date', 'Party', 'Brand', 'Amount', 'Status']}
-      rows={table}
-      totalsRow={['', '', '', 'Total', formatPkr(total), '']}
-    />
-  );
-}
-
-function ExpenseReport({ from, to }) {
-  const [rows, setRows] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    setRows(null);
-    fetchExpenses({ from, to }).then((r) => { if (alive) setRows(r); });
-    return () => { alive = false; };
-  }, [from, to]);
-
-  if (rows === null) return <div className="py-20 flex justify-center"><Spinner /></div>;
-
-  const total = rows.reduce((s, r) => s + Number(r.amount), 0);
-  const table = rows.map((r) => [
-    formatDate(r.expense_date), r.chart_of_accounts?.name || '', r.description || '', formatPkr(r.amount), r.status,
-  ]);
-
-  return (
-    <ReportTable
-      title="Expense Report"
-      columns={['Date', 'Category', 'Description', 'Amount', 'Status']}
-      rows={table}
-      totalsRow={['', '', 'Total', formatPkr(total), '']}
-    />
-  );
-}
-
-function VoucherReport({ from, to }) {
-  const [rows, setRows] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    setRows(null);
-    fetchAllVouchers({ from, to }).then((r) => { if (alive) setRows(r); });
-    return () => { alive = false; };
-  }, [from, to]);
-
-  if (rows === null) return <div className="py-20 flex justify-center"><Spinner /></div>;
-
-  const total = rows.reduce((s, r) => s + Number(r.amount), 0);
-  const table = rows.map((r) => {
-    const tab = VOUCHER_TABS.find((t) => t.direction === r.direction && t.kind === r.chart_of_accounts?.cash_bank_kind);
-    return [
-      r.voucher_no, formatDate(r.payment_date), tab?.key.toUpperCase() || r.direction,
-      r.parties?.name || '', formatPkr(r.amount), r.status,
-    ];
-  });
-
-  return (
-    <ReportTable
-      title="Vouchers"
-      columns={['Voucher #', 'Date', 'Type', 'Party', 'Amount', 'Status']}
-      rows={table}
-      totalsRow={['', '', '', 'Total', formatPkr(total), '']}
-    />
-  );
-}
-
 function LedgerReport({ from, to, brand }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {
@@ -4621,10 +4530,8 @@ function TrialBalanceReport() {
 function SettingsScreen() {
   const { profile } = useAuth();
   const [showPermissions, setShowPermissions] = useState(false);
-  const [showChartOfAccounts, setShowChartOfAccounts] = useState(false);
 
   if (showPermissions) return <PermissionsScreen onBack={() => setShowPermissions(false)} />;
-  if (showChartOfAccounts) return <ChartOfAccountsScreen onBack={() => setShowChartOfAccounts(false)} />;
 
   return (
     <div className="max-w-xl space-y-4">
@@ -4659,39 +4566,25 @@ function SettingsScreen() {
         </button>
       )}
 
-      {profile?.is_admin && (
-        <button
-          onClick={() => setShowChartOfAccounts(true)}
-          className="w-full text-left"
-        >
-          <Card className="p-4 flex items-center justify-between hover:bg-gray-50">
-            <div className="flex items-center gap-3">
-              <ClipboardList size={20} style={{ color: THEME.blue }} />
-              <div>
-                <div className="font-medium">Chart of Accounts</div>
-                <div className="text-xs text-gray-500">View and add ledger accounts</div>
-              </div>
-            </div>
-            <ChevronRight size={18} className="text-gray-300" />
-          </Card>
-        </button>
-      )}
-
       {profile?.is_admin && <DashboardAlertSettings />}
     </div>
   );
 }
 
-function ChartOfAccountsScreen({ onBack }) {
+function AccountsTab() {
+  const { profile } = useAuth();
   const [accounts, setAccounts] = useState(null);
   const [name, setName] = useState('');
   const [type, setType] = useState('expense');
   const [cashBankKind, setCashBankKind] = useState('cash');
   const [saving, setSaving] = useState(false);
+  const [ledgerAccount, setLedgerAccount] = useState(null);
+  const [from, setFrom] = useState(toDateInput(startOfMonth()));
+  const [to, setTo] = useState(toDateInput(new Date()));
   const { show, ToastHost } = useToast();
 
   function reload() {
-    fetchChartOfAccounts().then(setAccounts);
+    fetchChartOfAccounts().then((rows) => setAccounts(rows.filter((a) => a.type !== 'party')));
   }
   useEffect(() => { reload(); }, []);
 
@@ -4712,49 +4605,67 @@ function ChartOfAccountsScreen({ onBack }) {
 
   return (
     <div className="max-w-2xl">
-      <button onClick={onBack} className="text-sm text-gray-500 mb-4 hover:text-gray-800">&larr; Back to Admin</button>
-      <h2 className="font-display font-semibold text-lg mb-4">Chart of Accounts</h2>
-
-      <Card className="p-4 mb-5 flex flex-wrap items-end gap-3" style={{ borderColor: THEME.line }}>
-        <div className="flex-1 min-w-[180px]">
-          <Input label="Account name" value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <div className="w-40">
-          <Select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
-            <option value="expense">Expense</option>
-            <option value="cash_bank">Cash / Bank</option>
-            <option value="sales">Sales</option>
-            <option value="purchase">Purchase</option>
-          </Select>
-        </div>
-        {type === 'cash_bank' && (
-          <div className="w-32">
-            <Select label="Kind" value={cashBankKind} onChange={(e) => setCashBankKind(e.target.value)}>
-              <option value="cash">Cash</option>
-              <option value="bank">Bank</option>
+      {profile?.is_admin && (
+        <Card className="p-4 mb-5 flex flex-wrap items-end gap-3" style={{ borderColor: THEME.line }}>
+          <div className="flex-1 min-w-[180px]">
+            <Input label="Account name" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="w-40">
+            <Select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
+              <option value="expense">Expense</option>
+              <option value="cash_bank">Cash / Bank</option>
+              <option value="sales">Sales</option>
+              <option value="purchase">Purchase</option>
+              <option value="drawings">Drawings</option>
             </Select>
           </div>
-        )}
-        <Button onClick={submit} loading={saving}>Add account</Button>
-      </Card>
+          {type === 'cash_bank' && (
+            <div className="w-32">
+              <Select label="Kind" value={cashBankKind} onChange={(e) => setCashBankKind(e.target.value)}>
+                <option value="cash">Cash</option>
+                <option value="bank">Bank</option>
+              </Select>
+            </div>
+          )}
+          <Button onClick={submit} loading={saving}>Add account</Button>
+        </Card>
+      )}
 
       {accounts === null ? (
         <div className="py-20 flex justify-center"><Spinner /></div>
       ) : (
         <Card className="divide-y" style={{ borderColor: THEME.line }}>
           {accounts.map((a) => (
-            <div key={a.id} className="flex items-center justify-between px-4 py-3">
+            <button
+              key={a.id}
+              onClick={() => setLedgerAccount({ id: a.id, name: a.name })}
+              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50"
+            >
               <div>
                 <div className="font-medium text-sm">{a.name}</div>
                 <div className="text-xs text-gray-500 capitalize">
                   {a.type.replace('_', ' ')}{a.cash_bank_kind ? ` · ${a.cash_bank_kind}` : ''}{a.is_system ? ' · system' : ''}
                 </div>
               </div>
-            </div>
+              <ChevronRight size={18} className="text-gray-300 flex-shrink-0" />
+            </button>
           ))}
         </Card>
       )}
+
+      <AccountLedgerModal account={ledgerAccount} from={from} to={to} onClose={() => setLedgerAccount(null)} />
       <ToastHost />
+    </div>
+  );
+}
+
+function GeneralLedgerTab() {
+  const [from, setFrom] = useState(toDateInput(startOfMonth()));
+  const [to, setTo] = useState(toDateInput(new Date()));
+  return (
+    <div>
+      <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+      <LedgerReport from={from} to={to} />
     </div>
   );
 }
