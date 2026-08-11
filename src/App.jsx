@@ -2600,6 +2600,20 @@ function purchaseDocLabel(invoiceType) {
 function PurchaseModule({ initialTab }) {
   const [tab, setTab] = useState(initialTab || 'purchase');
   const [mode, setMode] = useState('new');
+  // PurchaseEntryForm reports its own dirty state up so these tab/mode
+  // buttons — which remount/discard it via `key={tab}` — can warn before
+  // silently wiping an in-progress bill, the same protection the unsaved-
+  // changes guard gives the browser Back button.
+  const [entryDirty, setEntryDirty] = useState(false);
+
+  function guardedSwitch(fn) {
+    if (mode === 'new' && entryDirty
+        && !window.confirm('You have unsaved changes on this form. Switching will discard them. Continue?')) {
+      return;
+    }
+    setEntryDirty(false);
+    fn();
+  }
 
   return (
     <div>
@@ -2608,12 +2622,12 @@ function PurchaseModule({ initialTab }) {
         <SegmentedBar
           options={PURCHASE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
           value={tab}
-          onChange={(k) => { setTab(k); setMode('new'); }}
+          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('new'); }); }}
         />
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
           value={mode}
-          onChange={setMode}
+          onChange={(k) => { if (k !== mode) guardedSwitch(() => setMode(k)); }}
         />
       </div>
 
@@ -2623,7 +2637,7 @@ function PurchaseModule({ initialTab }) {
           {PURCHASE_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { setTab(t.key); setMode('new'); }}
+              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('new'); }); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -2635,7 +2649,7 @@ function PurchaseModule({ initialTab }) {
           {[{ k: 'new', l: 'New' }, { k: 'old', l: 'Old' }].map((o) => (
             <button
               key={o.k}
-              onClick={() => setMode(o.k)}
+              onClick={() => { if (o.k !== mode) guardedSwitch(() => setMode(o.k)); }}
               className="px-3 py-1.5 rounded-md text-sm font-medium"
               style={mode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
             >
@@ -2646,7 +2660,7 @@ function PurchaseModule({ initialTab }) {
       </div>
 
       {mode === 'new'
-        ? <PurchaseEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} />
+        ? <PurchaseEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} onDirtyChange={setEntryDirty} />
         : <PurchaseOldList key={tab} invoiceType={tab} />}
     </div>
   );
@@ -2659,7 +2673,7 @@ function emptyPurchaseLine(defaultItem) {
   };
 }
 
-function PurchaseEntryForm({ invoiceType, onSavedClose }) {
+function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   const isBill = invoiceType === 'purchase';
   const title = purchaseDocLabel(invoiceType);
 
@@ -2702,6 +2716,8 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
+  useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     fetchBrands().then((rows) => { setBrands(rows); if (rows.length && !brand) setBrand(rows[0]); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2732,6 +2748,10 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
   }, [brand?.category]);
 
   function switchBrand(b) {
+    if (b?.brand_key === brand?.brand_key) return; // already on this brand — nothing to do
+    if (isDirty && !window.confirm('Switching category will clear the vendor and line items you already entered. Continue?')) {
+      return;
+    }
     setBrand(b);
     setLines([emptyPurchaseLine(b?.category === 'polybags' ? defaultItem : null)]);
     setVendor(null);
@@ -3466,6 +3486,20 @@ function saleDocLabel(invoiceType) {
 function SalesModule({ initialTab }) {
   const [tab, setTab] = useState(initialTab || 'sale');
   const [mode, setMode] = useState('new');
+  // SaleEntryForm reports its own dirty state up so these tab/mode buttons
+  // — which remount/discard it via `key={tab}` — can warn before silently
+  // wiping an in-progress bill, the same protection the unsaved-changes
+  // guard gives the browser Back button.
+  const [entryDirty, setEntryDirty] = useState(false);
+
+  function guardedSwitch(fn) {
+    if (mode === 'new' && entryDirty
+        && !window.confirm('You have unsaved changes on this form. Switching will discard them. Continue?')) {
+      return;
+    }
+    setEntryDirty(false);
+    fn();
+  }
 
   return (
     <div>
@@ -3474,12 +3508,12 @@ function SalesModule({ initialTab }) {
         <SegmentedBar
           options={SALE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
           value={tab}
-          onChange={(k) => { setTab(k); setMode('new'); }}
+          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('new'); }); }}
         />
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
           value={mode}
-          onChange={setMode}
+          onChange={(k) => { if (k !== mode) guardedSwitch(() => setMode(k)); }}
         />
       </div>
 
@@ -3489,7 +3523,7 @@ function SalesModule({ initialTab }) {
           {SALE_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { setTab(t.key); setMode('new'); }}
+              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('new'); }); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -3501,7 +3535,7 @@ function SalesModule({ initialTab }) {
           {[{ k: 'new', l: 'New' }, { k: 'old', l: 'Old' }].map((o) => (
             <button
               key={o.k}
-              onClick={() => setMode(o.k)}
+              onClick={() => { if (o.k !== mode) guardedSwitch(() => setMode(o.k)); }}
               className="px-3 py-1.5 rounded-md text-sm font-medium"
               style={mode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
             >
@@ -3512,7 +3546,7 @@ function SalesModule({ initialTab }) {
       </div>
 
       {mode === 'new'
-        ? <SaleEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} />
+        ? <SaleEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} onDirtyChange={setEntryDirty} />
         : <SaleOldList key={tab} invoiceType={tab} />}
     </div>
   );
@@ -3525,7 +3559,7 @@ function emptySaleLine(defaultItem) {
   };
 }
 
-function SaleEntryForm({ invoiceType, onSavedClose }) {
+function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   const isBill = invoiceType === 'sale';
   const title = saleDocLabel(invoiceType);
 
@@ -3569,6 +3603,8 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
+  useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     fetchBrands().then((rows) => { setBrands(rows); if (rows.length && !brand) setBrand(rows[0]); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3611,6 +3647,10 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
   }, [brand?.category]);
 
   function switchBrand(b) {
+    if (b?.brand_key === brand?.brand_key) return; // already on this brand — nothing to do
+    if (isDirty && !window.confirm('Switching category will clear the customer and line items you already entered. Continue?')) {
+      return;
+    }
     setBrand(b);
     setLines([emptySaleLine(b?.category === 'polybags' ? defaultItem : null)]);
     setCustomer(null);
