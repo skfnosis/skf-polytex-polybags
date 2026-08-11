@@ -152,10 +152,15 @@ async function fetchChartOfAccounts({ search = '' } = {}) {
   return data;
 }
 
-async function createAccount({ name, type, cashBankKind }) {
-  const { data, error } = await supabase.from('chart_of_accounts')
-    .insert({ name, type, cash_bank_kind: type === 'cash_bank' ? cashBankKind : null })
-    .select().single();
+async function createAccount({ name, type, cashBankKind, parentAccountId, openingBalance = 0, openingBalanceType = 'debit' }) {
+  const { data, error } = await supabase.rpc('create_account', {
+    p_name: name,
+    p_type: type,
+    p_cash_bank_kind: type === 'cash_bank' ? cashBankKind : null,
+    p_parent_account_id: parentAccountId || null,
+    p_opening_balance: Number(openingBalance) || 0,
+    p_opening_balance_type: openingBalanceType,
+  });
   if (error) throw error;
   return data;
 }
@@ -5487,6 +5492,9 @@ function AccountsTab() {
   const [name, setName] = useState('');
   const [type, setType] = useState('expense');
   const [cashBankKind, setCashBankKind] = useState('cash');
+  const [parentAccount, setParentAccount] = useState(null);
+  const [openingBalance, setOpeningBalance] = useState('0');
+  const [openingBalanceType, setOpeningBalanceType] = useState('debit');
   const [saving, setSaving] = useState(false);
   const [ledgerAccount, setLedgerAccount] = useState(null);
   const [from, setFrom] = useState(toDateInput(startOfMonth()));
@@ -5502,9 +5510,12 @@ function AccountsTab() {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      await createAccount({ name: name.trim(), type, cashBankKind });
+      await createAccount({
+        name: name.trim(), type, cashBankKind,
+        parentAccountId: parentAccount?.id, openingBalance, openingBalanceType,
+      });
       show('Account added.');
-      setName('');
+      setName(''); setParentAccount(null); setOpeningBalance('0'); setOpeningBalanceType('debit');
       reload();
     } catch (e) {
       show(`Could not add account: ${e.message}`, 'danger');
@@ -5516,32 +5527,49 @@ function AccountsTab() {
   return (
     <div className="max-w-2xl">
       {profile?.is_admin && (
-        <Card className="p-4 mb-5 flex flex-wrap items-end gap-3" style={{ borderColor: THEME.line }}>
-          <div className="flex-1 min-w-[180px]">
-            <Input label="Account name" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div className="w-40">
-            <Select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
-              <option value="expense">Expense</option>
-              <option value="cash_bank">Cash / Bank</option>
-              <option value="sales">Sales</option>
-              <option value="purchase">Purchase</option>
-              <option value="drawings">Drawings</option>
-              <option value="asset">Asset</option>
-              <option value="liability">Liability</option>
-              <option value="capital">Capital / Equity</option>
-              <option value="income">Income (other)</option>
-            </Select>
-          </div>
-          {type === 'cash_bank' && (
-            <div className="w-32">
-              <Select label="Kind" value={cashBankKind} onChange={(e) => setCashBankKind(e.target.value)}>
-                <option value="cash">Cash</option>
-                <option value="bank">Bank</option>
+        <Card className="p-4 mb-5 space-y-3" style={{ borderColor: THEME.line }}>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex-1 min-w-[180px]">
+              <Input label="Account name" value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div className="w-40">
+              <Select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
+                <option value="expense">Expense</option>
+                <option value="cash_bank">Cash / Bank</option>
+                <option value="sales">Sales</option>
+                <option value="purchase">Purchase</option>
+                <option value="drawings">Drawings</option>
+                <option value="asset">Asset</option>
+                <option value="liability">Liability</option>
+                <option value="capital">Capital / Equity</option>
+                <option value="income">Income (other)</option>
               </Select>
             </div>
-          )}
-          <Button onClick={submit} loading={saving}>Add account</Button>
+            {type === 'cash_bank' && (
+              <div className="w-32">
+                <Select label="Kind" value={cashBankKind} onChange={(e) => setCashBankKind(e.target.value)}>
+                  <option value="cash">Cash</option>
+                  <option value="bank">Bank</option>
+                </Select>
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex-1 min-w-[180px]">
+              <AccountPicker value={parentAccount} onChange={setParentAccount} />
+              <p className="text-xs text-gray-500 mt-1">Parent account (optional)</p>
+            </div>
+            <div className="w-40">
+              <Input label="Opening balance" type="number" value={openingBalance} onChange={(e) => setOpeningBalance(e.target.value)} />
+            </div>
+            <div className="w-32">
+              <Select label="Type" value={openingBalanceType} onChange={(e) => setOpeningBalanceType(e.target.value)}>
+                <option value="debit">Debit</option>
+                <option value="credit">Credit</option>
+              </Select>
+            </div>
+            <Button onClick={submit} loading={saving}>Add account</Button>
+          </div>
         </Card>
       )}
 
