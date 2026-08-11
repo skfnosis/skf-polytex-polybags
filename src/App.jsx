@@ -336,8 +336,8 @@ async function fetchSalesOverview({ from, to }) {
   return data || [];
 }
 
-async function fetchMonthlyProfit({ from, to }) {
-  const { data, error } = await supabase.rpc('dashboard_monthly_profit', { p_from: from, p_to: to });
+async function fetchMonthlyBreakdown({ from, to }) {
+  const { data, error } = await supabase.rpc('dashboard_monthly_breakdown', { p_from: from, p_to: to });
   if (error) throw error;
   return data || [];
 }
@@ -1929,9 +1929,24 @@ async function buildLedgerPdf({ account, rows, openingBalance, from, to }) {
 const MONTHLY_PROFIT_TOGGLES = [
   { key: 'total', label: 'Total Profit' },
   { key: 'sales', label: 'Total Sales' },
-  { key: 'skf_polytex', label: 'Fabric (PolyTex)' },
-  { key: 'skf_polybags', label: 'Poly Bags' },
+  { key: 'fabric_sales', label: 'Fabric Sales' },
+  { key: 'polybag_sales', label: 'Poly Bag Sales' },
 ];
+
+const ANALYSIS_RANGE_OPTIONS = [
+  { key: 'this_month', label: 'This Month' },
+  { key: '3m', label: 'Last 3 Months' },
+  { key: '6m', label: 'Last 6 Months' },
+  { key: 'custom', label: 'Custom' },
+];
+
+function analysisDateRange(range, customFrom, customTo) {
+  const today = new Date();
+  if (range === 'this_month') return { from: toDateInput(startOfMonth()), to: toDateInput(today) };
+  if (range === '3m') return { from: toDateInput(new Date(today.getFullYear(), today.getMonth() - 2, 1)), to: toDateInput(today) };
+  if (range === 'custom') return { from: customFrom, to: customTo };
+  return { from: toDateInput(new Date(today.getFullYear(), today.getMonth() - 5, 1)), to: toDateInput(today) }; // 6m default
+}
 
 function DashboardScreen() {
   const [from, setFrom] = useState(toDateInput(startOfMonth()));
@@ -1945,9 +1960,18 @@ function DashboardScreen() {
   const [payables, setPayables] = useState([]);
   const [customerBalances, setCustomerBalances] = useState([]);
   const [expensesAndDrawings, setExpensesAndDrawings] = useState({ expenses: 0, drawings: 0 });
-  const [monthlyProfit, setMonthlyProfit] = useState([]);
+  const [monthlyBreakdown, setMonthlyBreakdown] = useState([]);
+  const [breakdownLoading, setBreakdownLoading] = useState(true);
   const [profitToggle, setProfitToggle] = useState('total');
   const [appSettings, setAppSettings] = useState({ low_cash_threshold: 0, high_payables_threshold: 0 });
+
+  // Historical analysis range — independent of the Cash/Sale/Receivable
+  // filter bar above, since "how did the last 6 months trend" is a
+  // different question from "what happened this period". Changing it only
+  // re-fetches the one breakdown RPC, not the whole dashboard.
+  const [analysisRange, setAnalysisRange] = useState('6m'); // this_month | 3m | 6m | custom
+  const [analysisCustomFrom, setAnalysisCustomFrom] = useState(toDateInput(startOfMonth()));
+  const [analysisCustomTo, setAnalysisCustomTo] = useState(toDateInput(new Date()));
 
   const [ledgerAccount, setLedgerAccount] = useState(null); // { id, name } | null
   const [receivablesModalOpen, setReceivablesModalOpen] = useState(false);
@@ -1959,8 +1983,6 @@ function DashboardScreen() {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    const today = toDateInput(new Date());
-    const graphFrom = toDateInput(new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1));
     Promise.all([
       fetchCashBankBalances(),
       fetchSalesOverview({ from, to }),
@@ -1969,19 +1991,29 @@ function DashboardScreen() {
       fetchPartyBalances({ type: 'supplier' }),
       fetchPartyBalances({ type: 'customer', positiveOnly: true }),
       fetchExpensesAndDrawings({ from, to }),
-      fetchMonthlyProfit({ from: graphFrom, to: today }),
       fetchAppSettings(),
-    ]).then(([cb, so, ps, rec, pay, debtors, ed, mp, settings]) => {
+    ]).then(([cb, so, ps, rec, pay, debtors, ed, settings]) => {
       if (!alive) return;
       setCashBank(cb);
       setSalesOverview(so); setPaymentsSummary(ps); setReceivables(rec);
       setPayables(pay.filter((p) => p.balance < 0));
       setCustomerBalances(debtors);
       setExpensesAndDrawings(ed);
-      setMonthlyProfit(mp); setAppSettings(settings);
+      setAppSettings(settings);
     }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [from, to]);
+
+  const { from: analysisFrom, to: analysisTo } = analysisDateRange(analysisRange, analysisCustomFrom, analysisCustomTo);
+
+  useEffect(() => {
+    let alive = true;
+    setBreakdownLoading(true);
+    fetchMonthlyBreakdown({ from: analysisFrom, to: analysisTo })
+      .then((rows) => { if (alive) setMonthlyBreakdown(rows); })
+      .finally(() => { if (alive) setBreakdownLoading(false); });
+    return () => { alive = false; };
+  }, [analysisFrom, analysisTo]);
 
   if (loading && cashBank.length === 0) {
     return <div className="py-20 flex justify-center"><Spinner /></div>;
@@ -1994,21 +2026,13 @@ function DashboardScreen() {
   const payablesTotal = payables.reduce((s, p) => s - Number(p.balance), 0);
   const salesTotal = salesOverview.reduce((s, r) => s + Number(r.amount), 0);
 
-  const monthLabels = [...new Set(monthlyProfit.map((r) => r.month))];
-  const graphData = monthLabels.map((month) => {
-    const rows = monthlyProfit.filter((r) => r.month === month);
-    const totalProfit = rows.reduce((s, r) => s + (Number(r.sales) - Number(r.purchase) - Number(r.expenses)), 0);
-    const totalSales = rows.reduce((s, r) => s + Number(r.sales), 0);
-    const byBrand = {};
-    rows.forEach((r) => { byBrand[r.brand_key] = Number(r.sales) - Number(r.purchase) - Number(r.expenses); });
-    return {
-      month: new Date(month).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
-      total: totalProfit,
-      sales: totalSales,
-      skf_polytex: byBrand.skf_polytex || 0,
-      skf_polybags: byBrand.skf_polybags || 0,
-    };
-  });
+  const graphData = monthlyBreakdown.map((r) => ({
+    month: new Date(r.month).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
+    total: Number(r.profit),
+    sales: Number(r.total_sales),
+    fabric_sales: Number(r.fabric_sales),
+    polybag_sales: Number(r.polybag_sales),
+  }));
 
   const alerts = [];
   if (receivables.overdue_receivables > 0) {
@@ -2094,9 +2118,28 @@ function DashboardScreen() {
         <StatCard title="Drawings" icon={Receipt} color={THEME.amber} value={formatPkr(expensesAndDrawings.drawings)} />
       </div>
 
-      {/* Row 6 — Growth chart */}
-      <SectionHeading>Growth</SectionHeading>
+      {/* Row 6 — Historical financial analysis */}
+      <SectionHeading>Historical Analysis</SectionHeading>
       <Card className="p-4" style={{ borderColor: THEME.line }}>
+        <div className="flex flex-wrap items-end gap-3 mb-4">
+          <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+            {ANALYSIS_RANGE_OPTIONS.map((o) => (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => setAnalysisRange(o.key)}
+                className="px-3 py-1.5 rounded-md text-xs font-medium"
+                style={analysisRange === o.key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          {analysisRange === 'custom' && (
+            <ReportFilterBar from={analysisCustomFrom} to={analysisCustomTo} onFromChange={setAnalysisCustomFrom} onToChange={setAnalysisCustomTo} />
+          )}
+        </div>
+
         <div className="flex flex-wrap gap-2 mb-4">
           {MONTHLY_PROFIT_TOGGLES.map((t) => (
             <button
@@ -2110,15 +2153,53 @@ function DashboardScreen() {
           ))}
         </div>
         <div style={{ width: '100%', height: 260 }}>
-          <React.Suspense fallback={<div className="h-full flex items-center justify-center"><Spinner /></div>}>
-            <GrowthChart
-              data={graphData}
-              dataKey={profitToggle}
-              name={MONTHLY_PROFIT_TOGGLES.find((t) => t.key === profitToggle).label}
-              stroke={THEME.emerald}
-              formatValue={formatPkr}
-            />
-          </React.Suspense>
+          {breakdownLoading && graphData.length === 0 ? (
+            <div className="h-full flex items-center justify-center"><Spinner /></div>
+          ) : (
+            <React.Suspense fallback={<div className="h-full flex items-center justify-center"><Spinner /></div>}>
+              <GrowthChart
+                data={graphData}
+                dataKey={profitToggle}
+                name={MONTHLY_PROFIT_TOGGLES.find((t) => t.key === profitToggle).label}
+                stroke={THEME.emerald}
+                formatValue={formatPkr}
+              />
+            </React.Suspense>
+          )}
+        </div>
+
+        <div className="mt-5 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 border-b" style={{ borderColor: THEME.line }}>
+                <th className="py-2 pr-3 font-medium">Month</th>
+                <th className="py-2 pr-3 font-medium text-right">Fabric Sale</th>
+                <th className="py-2 pr-3 font-medium text-right">Poly Bag Sale</th>
+                <th className="py-2 pr-3 font-medium text-right">Total Sale</th>
+                <th className="py-2 pr-3 font-medium text-right">Purchase</th>
+                <th className="py-2 pr-3 font-medium text-right">Expenses</th>
+                <th className="py-2 pl-3 font-medium text-right">Profit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthlyBreakdown.map((r) => (
+                <tr key={r.month} className="border-b last:border-0" style={{ borderColor: THEME.line }}>
+                  <td className="py-2 pr-3 whitespace-nowrap">{new Date(r.month).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}</td>
+                  <td className="py-2 pr-3 text-right">{formatPkr(r.fabric_sales)}</td>
+                  <td className="py-2 pr-3 text-right">{formatPkr(r.polybag_sales)}</td>
+                  <td className="py-2 pr-3 text-right font-medium">{formatPkr(r.total_sales)}</td>
+                  <td className="py-2 pr-3 text-right">{formatPkr(r.total_purchase)}</td>
+                  <td className="py-2 pr-3 text-right">{formatPkr(r.expenses)}</td>
+                  <td className="py-2 pl-3 text-right font-semibold" style={{ color: Number(r.profit) >= 0 ? THEME.success : THEME.danger }}>
+                    {formatPkr(r.profit)}
+                  </td>
+                </tr>
+              ))}
+              {!breakdownLoading && monthlyBreakdown.length === 0 && (
+                <tr><td colSpan={7} className="py-6 text-center text-gray-400">No data for this range.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </Card>
 
