@@ -210,6 +210,15 @@ async function fetchItems({ search = '', category = null } = {}) {
   return data;
 }
 
+// Default quality for a brand-new Polybag purchase/sale line — "LLD Polybag"
+// per the standard entry flow. Falls back to no default if that item was
+// ever renamed/removed, rather than guessing at another item.
+async function fetchDefaultPolybagItem() {
+  const rows = await fetchItems({ search: 'LLD Polybag', category: 'polybags' });
+  const exact = rows.find((r) => r.name.toLowerCase() === 'lld polybag');
+  return exact ? { id: exact.id, name: exact.name } : null;
+}
+
 async function createItem({ name, category, defaultUnit, fabricGroup, composition }) {
   const { data, error } = await supabase.rpc('create_item', {
     p_name: name,
@@ -370,6 +379,7 @@ async function createInvoice({
       unit: i.unit,
       rate: Number(i.rate) || 0,
       description: i.description || '',
+      narration: i.narration || '',
     })),
     p_supplier_invoice_no: supplierInvoiceNo || null,
     p_linked_order_id: linkedOrderId || null,
@@ -1090,12 +1100,12 @@ function AccountPicker({ value, onChange, resetKey, inputRef, onEnterNext }) {
 
 function BrandTabs({ brands, value, onChange, allowAll = false }) {
   return (
-    <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+    <div className="flex md:inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
       {allowAll && (
         <button
           type="button"
           onClick={() => onChange(null)}
-          className="px-3 py-1.5 rounded-md text-sm font-medium transition"
+          className="flex-1 md:flex-none px-3 py-1.5 rounded-md text-sm font-medium transition"
           style={!value ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
         >
           All brands
@@ -1106,13 +1116,34 @@ function BrandTabs({ brands, value, onChange, allowAll = false }) {
           key={b.brand_key}
           type="button"
           onClick={() => onChange(b)}
-          className="px-3 py-1.5 rounded-md text-sm font-medium transition inline-flex items-center gap-1.5"
+          className="flex-1 md:flex-none px-3 py-1.5 rounded-md text-sm font-medium transition flex items-center justify-center gap-1.5"
           style={value?.brand_key === b.brand_key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
         >
           {BRAND_LOGOS[b.brand_key] && (
-            <img src={BRAND_LOGOS[b.brand_key]} alt="" className="w-4 h-4 object-contain" />
+            <img src={BRAND_LOGOS[b.brand_key]} alt="" className="w-4 h-4 object-contain flex-shrink-0" />
           )}
           {b.display_name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Compact, full-width, equal-segment tab bar for mobile — guarantees every
+// option stays on one line regardless of label length, unlike the desktop
+// pill row (flex-wrap) which can wrap onto multiple lines on a narrow screen.
+function SegmentedBar({ options, value, onChange }) {
+  return (
+    <div className="flex w-full rounded-lg border overflow-hidden" style={{ borderColor: THEME.line }}>
+      {options.map((o) => (
+        <button
+          key={o.key}
+          type="button"
+          onClick={() => onChange(o.key)}
+          className="flex-1 px-1.5 py-2 text-xs font-medium text-center truncate"
+          style={value === o.key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+        >
+          {o.label}
         </button>
       ))}
     </div>
@@ -2224,9 +2255,9 @@ function MobileTabBar({ current, onNavigate, visiblePages }) {
 // ============================================================================
 
 const PURCHASE_TABS = [
-  { key: 'purchase_order', label: 'Purchase Order' },
-  { key: 'purchase', label: 'Purchase Bill' },
-  { key: 'purchase_return', label: 'Purchase Return' },
+  { key: 'purchase_order', label: 'Purchase Order', mobileLabel: 'Order' },
+  { key: 'purchase', label: 'Purchase Bill', mobileLabel: 'Bill' },
+  { key: 'purchase_return', label: 'Purchase Return', mobileLabel: 'Return' },
 ];
 
 function purchaseDocLabel(invoiceType) {
@@ -2240,7 +2271,22 @@ function PurchaseModule({ initialTab }) {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+      {/* Mobile: compact stacked single-line bars */}
+      <div className="flex flex-col gap-2 mb-4 md:hidden">
+        <SegmentedBar
+          options={PURCHASE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
+          value={tab}
+          onChange={(k) => { setTab(k); setMode('new'); }}
+        />
+        <SegmentedBar
+          options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
+          value={mode}
+          onChange={setMode}
+        />
+      </div>
+
+      {/* Desktop: pill row */}
+      <div className="hidden md:flex flex-wrap items-center justify-between gap-3 mb-5">
         <div className="flex flex-wrap gap-2">
           {PURCHASE_TABS.map((t) => (
             <button
@@ -2274,8 +2320,11 @@ function PurchaseModule({ initialTab }) {
   );
 }
 
-function emptyPurchaseLine() {
-  return { itemId: null, itemName: '', unit: '', quantity: '', rate: '' };
+function emptyPurchaseLine(defaultItem) {
+  return {
+    itemId: defaultItem?.id || null, itemName: defaultItem?.name || '',
+    unit: 'KG', quantity: '', rate: '', narration: '',
+  };
 }
 
 function PurchaseEntryForm({ invoiceType, onSavedClose }) {
@@ -2287,26 +2336,32 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
   const [vendor, setVendor] = useState(null);
   const [vendorResetKey, setVendorResetKey] = useState(0);
   const [date, setDate] = useState(toDateInput(new Date()));
+  const [defaultItem, setDefaultItem] = useState(null);
   const [lines, setLines] = useState([emptyPurchaseLine()]);
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [showReport, setShowReport] = useState(false);
   const { show, ToastHost } = useToast();
 
   const [supplierInvoiceNo, setSupplierInvoiceNo] = useState('');
   const [poOptions, setPoOptions] = useState([]);
   const [linkedOrder, setLinkedOrder] = useState(null);
+  // Hidden from the entry UI (see brief), but kept so the total formula and
+  // create_invoice's params stay unchanged — they just always send 0 now.
   const [transport, setTransport] = useState('0');
   const [loadingCharge, setLoadingCharge] = useState('0');
   const [discount, setDiscount] = useState('0');
   const [tax, setTax] = useState('0');
-  const [narration, setNarration] = useState('');
 
   const dateRef = useRef(null);
   const vendorRef = useRef(null);
   const lineRefs = useRef({});
   function getLineRefs(i) {
     if (!lineRefs.current[i]) {
-      lineRefs.current[i] = { item: React.createRef(), unit: React.createRef(), qty: React.createRef(), rate: React.createRef() };
+      lineRefs.current[i] = {
+        item: React.createRef(), unit: React.createRef(), qty: React.createRef(),
+        rate: React.createRef(), narration: React.createRef(),
+      };
     }
     return lineRefs.current[i];
   }
@@ -2324,21 +2379,36 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     return () => { alive = false; };
   }, [isBill, vendor]);
 
+  // Default quality: LLD Polybag, for the Polybags brand only.
+  useEffect(() => {
+    if (brand?.category !== 'polybags') { setDefaultItem(null); return; }
+    let alive = true;
+    fetchDefaultPolybagItem().then((item) => {
+      if (!alive) return;
+      setDefaultItem(item);
+      if (item) {
+        setLines((ls) => (ls.length === 1 && !ls[0].itemId
+          ? [{ ...ls[0], itemId: item.id, itemName: item.name }]
+          : ls));
+      }
+    });
+    return () => { alive = false; };
+  }, [brand?.category]);
+
   function switchBrand(b) {
     setBrand(b);
-    setLines([emptyPurchaseLine()]);
+    setLines([emptyPurchaseLine(b?.category === 'polybags' ? defaultItem : null)]);
     setVendor(null);
     setVendorResetKey((k) => k + 1);
     setLinkedOrder(null);
     setSupplierInvoiceNo('');
     setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
-    setNarration('');
     lineRefs.current = {};
   }
 
   function addLine(focus = true) {
     setLines((ls) => {
-      const next = [...ls, emptyPurchaseLine()];
+      const next = [...ls, emptyPurchaseLine(defaultItem)];
       if (focus) {
         const idx = next.length - 1;
         requestAnimationFrame(() => getLineRefs(idx).item.current?.focus());
@@ -2374,6 +2444,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
       setLines(items.map((it) => ({
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
+        narration: it.narration || '',
       })));
     } catch (e) {
       show(`Could not load purchase order: ${e.message}`, 'danger');
@@ -2386,13 +2457,12 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     : subtotal;
 
   function resetForm() {
-    setLines([emptyPurchaseLine()]);
+    setLines([emptyPurchaseLine(defaultItem)]);
     setVendor(null);
     setVendorResetKey((k) => k + 1);
     setSupplierInvoiceNo('');
     setLinkedOrder(null);
     setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
-    setNarration('');
     lineRefs.current = {};
     requestAnimationFrame(() => dateRef.current?.focus());
   }
@@ -2406,14 +2476,13 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
       const id = await createInvoice({
         invoiceType, brandKey: brand.brand_key, category: brand.category,
         partyId: vendor.id, invoiceDate: date,
-        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName })),
+        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration })),
         supplierInvoiceNo: isBill ? supplierInvoiceNo : undefined,
         linkedOrderId: isBill ? linkedOrder?.id : undefined,
         transport: isBill ? transport : undefined,
         loading: isBill ? loadingCharge : undefined,
         discount: isBill ? discount : undefined,
         tax: isBill ? tax : undefined,
-        narration: isBill ? narration : undefined,
       });
       const { invoice } = await fetchInvoiceWithItems(id);
       show(`Saved. ${invoice.invoice_no} created.`);
@@ -2430,13 +2499,13 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
   function buildDraft() {
     const pseudoInvoice = {
       invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: vendor?.name },
-      invoice_type: invoiceType, supplier_invoice_no: supplierInvoiceNo, narration,
+      invoice_type: invoiceType, supplier_invoice_no: supplierInvoiceNo,
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
     };
     const pseudoItems = lines.filter((l) => l.itemId).map((l) => ({
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
-      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0),
+      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration,
     }));
     return { pseudoInvoice, pseudoItems };
   }
@@ -2500,6 +2569,15 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
           ref={getLineRefs(i).rate}
           type="number" label="Rate" value={line.rate}
           onChange={(e) => updateLine(i, { rate: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).narration.current?.focus(); } }}
+        />
+      ),
+      narration: (
+        <Input
+          ref={getLineRefs(i).narration}
+          label="Narration (optional)" value={line.narration}
+          placeholder="e.g. Order A"
+          onChange={(e) => updateLine(i, { narration: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -2562,10 +2640,11 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
         <table className="w-full text-sm">
           <thead>
             <tr style={{ backgroundColor: THEME.surface }}>
-              <th className="text-left font-medium px-3 py-2.5 w-2/5">Item</th>
+              <th className="text-left font-medium px-3 py-2.5 w-1/3">Item</th>
               <th className="text-left font-medium px-3 py-2.5">Unit</th>
               <th className="text-left font-medium px-3 py-2.5">Qty</th>
               <th className="text-left font-medium px-3 py-2.5">Rate</th>
+              <th className="text-left font-medium px-3 py-2.5 w-1/5">Narration</th>
               <th className="text-left font-medium px-3 py-2.5">Amount</th>
               <th className="px-2 py-2.5" />
             </tr>
@@ -2579,6 +2658,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
                   <td className="px-3 py-2 w-28">{f.unit}</td>
                   <td className="px-3 py-2 w-24">{f.qty}</td>
                   <td className="px-3 py-2 w-28">{f.rate}</td>
+                  <td className="px-3 py-2">{f.narration}</td>
                   <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
                   <td className="px-2 py-2 pt-4">
                     <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
@@ -2613,25 +2693,11 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
                   <div className="px-3 py-2.5 text-sm font-medium">{f.amount}</div>
                 </div>
               </div>
+              {f.narration}
             </Card>
           );
         })}
       </div>
-
-      {isBill && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 max-w-xl ml-auto">
-          <Input label="Transport" type="number" value={transport} onChange={(e) => setTransport(e.target.value)} />
-          <Input label="Loading/Unloading" type="number" value={loadingCharge} onChange={(e) => setLoadingCharge(e.target.value)} />
-          <Input label="Discount" type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} />
-          <Input label="Tax" type="number" value={tax} onChange={(e) => setTax(e.target.value)} />
-        </div>
-      )}
-
-      {isBill && (
-        <div className="mt-3">
-          <Input label="Narration (optional)" value={narration} onChange={(e) => setNarration(e.target.value)} />
-        </div>
-      )}
 
       <div className="flex items-center justify-end gap-2 mt-5 mb-6">
         <span className="text-gray-500">{isBill ? 'Grand Total:' : 'Total:'}</span>
@@ -2642,12 +2708,17 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
         <Button onClick={() => save(false)} loading={saving}>Save</Button>
         <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
         <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
-        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export PDF</Button>
+        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
+        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
-        Enter moves Date → Vendor → Item → Unit → Qty → Rate → next line. F2 on the vendor field adds a vendor, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
+        Enter moves Date → Vendor → Item → Unit → Qty → Rate → Narration → next line. F2 on the vendor field adds a vendor, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
       </p>
+      <DocReportModal
+        open={showReport} onClose={() => setShowReport(false)}
+        title={title} buildDoc={() => buildDraft()} buildPdf={buildPurchaseDocPdf}
+      />
       <ToastHost />
     </div>
   );
@@ -2669,19 +2740,19 @@ async function buildPurchaseDocPdf(invoice, items) {
   }
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
 
-  const rows = items.map((it) => [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate), formatPkr(it.amount)]);
+  const rows = items.map((it) => [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate), it.narration || '', formatPkr(it.amount)]);
   const subtotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
-  const foot = [['', '', '', 'Subtotal', formatPkr(subtotal)]];
-  if (invoice.invoice_type === 'purchase') {
-    foot.push(['', '', '', 'Transport + Loading + Tax − Discount',
-      formatPkr(Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
-        + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0))]);
+  const extraCharges = Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
+    + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0);
+  const foot = [['', '', '', '', 'Subtotal', formatPkr(subtotal)]];
+  if (invoice.invoice_type === 'purchase' && extraCharges !== 0) {
+    foot.push(['', '', '', '', 'Transport + Loading + Tax − Discount', formatPkr(extraCharges)]);
   }
-  foot.push(['', '', '', 'Grand Total', formatPkr(invoice.total_amount)]);
+  foot.push(['', '', '', '', 'Grand Total', formatPkr(invoice.total_amount)]);
 
   autoTable(doc, {
     startY,
-    head: [['Item', 'Unit', 'Qty', 'Rate', 'Amount']],
+    head: [['Item', 'Unit', 'Qty', 'Rate', 'Narration', 'Amount']],
     body: rows,
     foot,
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
@@ -2689,17 +2760,72 @@ async function buildPurchaseDocPdf(invoice, items) {
     styles: { fontSize: 9, cellPadding: 3 },
     didDrawPage: () => drawPdfFooter(doc),
   });
-  if (invoice.narration) {
-    doc.setFontSize(9);
-    doc.setTextColor(90);
-    doc.text(`Narration: ${invoice.narration}`, 14, doc.lastAutoTable.finalY + 8);
-  }
   return doc;
 }
 
 function printPdfDoc(doc) {
   doc.autoPrint();
   window.open(doc.output('bloburl'), '_blank');
+}
+
+// Report preview shared by Purchase/Sale entry forms — same generated PDF
+// used by Print/Export, plus a native share sheet (falls back to opening
+// the PDF in a new tab on desktop or any browser without Web Share) so a
+// bill can go straight to a vendor/customer over WhatsApp from a phone.
+function DocReportModal({ open, onClose, title, buildDoc, buildPdf }) {
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [docRef, setDocRef] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    if (!open) { setPreviewUrl(null); setDocRef(null); return; }
+    let alive = true;
+    setLoading(true);
+    (async () => {
+      const { pseudoInvoice, pseudoItems } = buildDoc();
+      const doc = await buildPdf(pseudoInvoice, pseudoItems);
+      if (!alive) return;
+      setDocRef(doc);
+      setPreviewUrl(doc.output('bloburl'));
+    })().finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleShare() {
+    if (!docRef) return;
+    try {
+      const blob = docRef.output('blob');
+      const file = new File([blob], `${slug(title)}.pdf`, { type: 'application/pdf' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title });
+      } else if (navigator.share) {
+        await navigator.share({ title, url: previewUrl });
+      } else {
+        window.open(previewUrl, '_blank');
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') show(`Could not share: ${e.message}`, 'danger');
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={`${title} — Report`} width={640}>
+      {loading ? (
+        <div className="py-16 flex justify-center"><Spinner /></div>
+      ) : previewUrl ? (
+        <div className="space-y-3">
+          <iframe title="report-preview" src={previewUrl} className="w-full rounded-lg border" style={{ height: 420, borderColor: THEME.line }} />
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" icon={FileDown} onClick={() => printPdfDoc(docRef)}>Print</Button>
+            <Button variant="outline" icon={FileDown} onClick={() => docRef.save(`${slug(title)}.pdf`)}>Export</Button>
+            <Button icon={FileDown} onClick={handleShare}>Share</Button>
+          </div>
+        </div>
+      ) : null}
+      <ToastHost />
+    </Modal>
+  );
 }
 
 function VoidReasonModal({ target, onClose, onConfirm }) {
@@ -2752,6 +2878,7 @@ function PurchaseViewModal({ doc, onClose }) {
                 <th className="text-left px-3 py-2">Unit</th>
                 <th className="text-left px-3 py-2">Qty</th>
                 <th className="text-left px-3 py-2">Rate</th>
+                <th className="text-left px-3 py-2">Narration</th>
                 <th className="text-left px-3 py-2">Amount</th>
               </tr>
             </thead>
@@ -2762,18 +2889,19 @@ function PurchaseViewModal({ doc, onClose }) {
                   <td className="px-3 py-2">{it.unit}</td>
                   <td className="px-3 py-2">{it.quantity}</td>
                   <td className="px-3 py-2">{formatPkr(it.rate)}</td>
+                  <td className="px-3 py-2 text-gray-500">{it.narration || ''}</td>
                   <td className="px-3 py-2">{formatPkr(it.amount)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </Card>
-        {invoice.invoice_type === 'purchase' && (
+        {invoice.invoice_type === 'purchase' && (Number(invoice.transport_charges) || Number(invoice.loading_charges) || Number(invoice.tax_amount) || Number(invoice.discount_amount)) ? (
           <div className="text-xs text-gray-500">
             Transport: {formatPkr(invoice.transport_charges)} · Loading: {formatPkr(invoice.loading_charges)} ·
             Tax: {formatPkr(invoice.tax_amount)} · Discount: {formatPkr(invoice.discount_amount)}
           </div>
-        )}
+        ) : null}
         {invoice.narration && <div className="text-gray-500">Narration: {invoice.narration}</div>}
         <div className="text-right font-bold" style={{ color: THEME.blue }}>Total: {formatPkr(invoice.total_amount)}</div>
       </div>
@@ -2934,9 +3062,9 @@ function PurchaseOldList({ invoiceType }) {
 // ============================================================================
 
 const SALE_TABS = [
-  { key: 'sale_order', label: 'Sale Order' },
-  { key: 'sale', label: 'Sale Bill' },
-  { key: 'sale_return', label: 'Sale Return' },
+  { key: 'sale_order', label: 'Sale Order', mobileLabel: 'Order' },
+  { key: 'sale', label: 'Sale Bill', mobileLabel: 'Bill' },
+  { key: 'sale_return', label: 'Sale Return', mobileLabel: 'Return' },
 ];
 
 function saleDocLabel(invoiceType) {
@@ -2950,7 +3078,22 @@ function SalesModule({ initialTab }) {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+      {/* Mobile: compact stacked single-line bars */}
+      <div className="flex flex-col gap-2 mb-4 md:hidden">
+        <SegmentedBar
+          options={SALE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
+          value={tab}
+          onChange={(k) => { setTab(k); setMode('new'); }}
+        />
+        <SegmentedBar
+          options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
+          value={mode}
+          onChange={setMode}
+        />
+      </div>
+
+      {/* Desktop: pill row */}
+      <div className="hidden md:flex flex-wrap items-center justify-between gap-3 mb-5">
         <div className="flex flex-wrap gap-2">
           {SALE_TABS.map((t) => (
             <button
@@ -2984,8 +3127,11 @@ function SalesModule({ initialTab }) {
   );
 }
 
-function emptySaleLine() {
-  return { itemId: null, itemName: '', unit: '', quantity: '', rate: '' };
+function emptySaleLine(defaultItem) {
+  return {
+    itemId: defaultItem?.id || null, itemName: defaultItem?.name || '',
+    unit: 'KG', quantity: '', rate: '', narration: '',
+  };
 }
 
 function SaleEntryForm({ invoiceType, onSavedClose }) {
@@ -2997,14 +3143,18 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
   const [customer, setCustomer] = useState(null);
   const [customerResetKey, setCustomerResetKey] = useState(0);
   const [date, setDate] = useState(toDateInput(new Date()));
+  const [defaultItem, setDefaultItem] = useState(null);
   const [lines, setLines] = useState([emptySaleLine()]);
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [showReport, setShowReport] = useState(false);
   const { show, ToastHost } = useToast();
 
   const [customerPoNo, setCustomerPoNo] = useState('');
   const [soOptions, setSoOptions] = useState([]);
   const [linkedOrder, setLinkedOrder] = useState(null);
+  // Hidden from the entry UI (see brief), but kept so the total formula and
+  // create_invoice's params stay unchanged — they just always send 0 now.
   const [transport, setTransport] = useState('0');
   const [loadingCharge, setLoadingCharge] = useState('0');
   const [discount, setDiscount] = useState('0');
@@ -3016,7 +3166,10 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
   const lineRefs = useRef({});
   function getLineRefs(i) {
     if (!lineRefs.current[i]) {
-      lineRefs.current[i] = { item: React.createRef(), unit: React.createRef(), qty: React.createRef(), rate: React.createRef() };
+      lineRefs.current[i] = {
+        item: React.createRef(), unit: React.createRef(), qty: React.createRef(),
+        rate: React.createRef(), narration: React.createRef(),
+      };
     }
     return lineRefs.current[i];
   }
@@ -3046,9 +3199,25 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     return () => { alive = false; };
   }, [isBill, customer]);
 
+  // Default quality: LLD Polybag, for the Polybags brand only.
+  useEffect(() => {
+    if (brand?.category !== 'polybags') { setDefaultItem(null); return; }
+    let alive = true;
+    fetchDefaultPolybagItem().then((item) => {
+      if (!alive) return;
+      setDefaultItem(item);
+      if (item) {
+        setLines((ls) => (ls.length === 1 && !ls[0].itemId
+          ? [{ ...ls[0], itemId: item.id, itemName: item.name }]
+          : ls));
+      }
+    });
+    return () => { alive = false; };
+  }, [brand?.category]);
+
   function switchBrand(b) {
     setBrand(b);
-    setLines([emptySaleLine()]);
+    setLines([emptySaleLine(b?.category === 'polybags' ? defaultItem : null)]);
     setCustomer(null);
     setCustomerResetKey((k) => k + 1);
     setLinkedOrder(null);
@@ -3059,7 +3228,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
 
   function addLine(focus = true) {
     setLines((ls) => {
-      const next = [...ls, emptySaleLine()];
+      const next = [...ls, emptySaleLine(defaultItem)];
       if (focus) {
         const idx = next.length - 1;
         requestAnimationFrame(() => getLineRefs(idx).item.current?.focus());
@@ -3095,6 +3264,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
       setLines(items.map((it) => ({
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
+        narration: it.narration || '',
       })));
     } catch (e) {
       show(`Could not load sale order: ${e.message}`, 'danger');
@@ -3107,7 +3277,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     : subtotal;
 
   function resetForm() {
-    setLines([emptySaleLine()]);
+    setLines([emptySaleLine(defaultItem)]);
     setCustomer(null);
     setCustomerResetKey((k) => k + 1);
     setCustomerPoNo('');
@@ -3126,7 +3296,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
       const id = await createInvoice({
         invoiceType, brandKey: brand.brand_key, category: brand.category,
         partyId: customer.id, invoiceDate: date,
-        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName })),
+        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration })),
         customerPoNo: isBill ? customerPoNo : undefined,
         linkedOrderId: isBill ? linkedOrder?.id : undefined,
         transport: isBill ? transport : undefined,
@@ -3160,7 +3330,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     };
     const pseudoItems = lines.filter((l) => l.itemId).map((l) => ({
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
-      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0),
+      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration,
     }));
     return { pseudoInvoice, pseudoItems };
   }
@@ -3234,6 +3404,15 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
           ref={getLineRefs(i).rate}
           type="number" label="Rate" value={line.rate}
           onChange={(e) => updateLine(i, { rate: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).narration.current?.focus(); } }}
+        />
+      ),
+      narration: (
+        <Input
+          ref={getLineRefs(i).narration}
+          label="Narration (optional)" value={line.narration}
+          placeholder="e.g. Order A"
+          onChange={(e) => updateLine(i, { narration: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -3296,10 +3475,11 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
         <table className="w-full text-sm">
           <thead>
             <tr style={{ backgroundColor: THEME.surface }}>
-              <th className="text-left font-medium px-3 py-2.5 w-2/5">Item</th>
+              <th className="text-left font-medium px-3 py-2.5 w-1/3">Item</th>
               <th className="text-left font-medium px-3 py-2.5">Unit</th>
               <th className="text-left font-medium px-3 py-2.5">Qty</th>
               <th className="text-left font-medium px-3 py-2.5">Rate</th>
+              <th className="text-left font-medium px-3 py-2.5 w-1/5">Narration</th>
               <th className="text-left font-medium px-3 py-2.5">Amount</th>
               <th className="px-2 py-2.5" />
             </tr>
@@ -3313,6 +3493,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
                   <td className="px-3 py-2 w-28">{f.unit}</td>
                   <td className="px-3 py-2 w-24">{f.qty}</td>
                   <td className="px-3 py-2 w-28">{f.rate}</td>
+                  <td className="px-3 py-2">{f.narration}</td>
                   <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
                   <td className="px-2 py-2 pt-4">
                     <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
@@ -3347,19 +3528,11 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
                   <div className="px-3 py-2.5 text-sm font-medium">{f.amount}</div>
                 </div>
               </div>
+              {f.narration}
             </Card>
           );
         })}
       </div>
-
-      {isBill && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 max-w-xl ml-auto">
-          <Input label="Transport" type="number" value={transport} onChange={(e) => setTransport(e.target.value)} />
-          <Input label="Loading/Unloading" type="number" value={loadingCharge} onChange={(e) => setLoadingCharge(e.target.value)} />
-          <Input label="Discount" type="number" value={discount} onChange={(e) => setDiscount(e.target.value)} />
-          <Input label="Tax" type="number" value={tax} onChange={(e) => setTax(e.target.value)} />
-        </div>
-      )}
 
       <div className="flex items-center justify-end gap-2 mt-5 mb-6">
         <span className="text-gray-500">{isBill ? 'Grand Total:' : 'Total:'}</span>
@@ -3370,12 +3543,17 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
         <Button onClick={() => save(false)} loading={saving}>Save</Button>
         <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
         <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
-        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export PDF</Button>
+        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
+        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
-        Enter moves Date → Customer → Item → Unit → Qty → Rate → next line. F2 on the customer field adds a customer, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
+        Enter moves Date → Customer → Item → Unit → Qty → Rate → Narration → next line. F2 on the customer field adds a customer, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
       </p>
+      <DocReportModal
+        open={showReport} onClose={() => setShowReport(false)}
+        title={title} buildDoc={() => buildDraft()} buildPdf={buildSaleDocPdf}
+      />
       <ToastHost />
     </div>
   );
@@ -3397,19 +3575,19 @@ async function buildSaleDocPdf(invoice, items) {
   }
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
 
-  const rows = items.map((it) => [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate), formatPkr(it.amount)]);
+  const rows = items.map((it) => [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate), it.narration || '', formatPkr(it.amount)]);
   const subtotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
-  const foot = [['', '', '', 'Subtotal', formatPkr(subtotal)]];
-  if (invoice.invoice_type === 'sale') {
-    foot.push(['', '', '', 'Transport + Loading + Tax − Discount',
-      formatPkr(Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
-        + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0))]);
+  const extraCharges = Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
+    + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0);
+  const foot = [['', '', '', '', 'Subtotal', formatPkr(subtotal)]];
+  if (invoice.invoice_type === 'sale' && extraCharges !== 0) {
+    foot.push(['', '', '', '', 'Transport + Loading + Tax − Discount', formatPkr(extraCharges)]);
   }
-  foot.push(['', '', '', 'Grand Total', formatPkr(invoice.total_amount)]);
+  foot.push(['', '', '', '', 'Grand Total', formatPkr(invoice.total_amount)]);
 
   autoTable(doc, {
     startY,
-    head: [['Item', 'Unit', 'Qty', 'Rate', 'Amount']],
+    head: [['Item', 'Unit', 'Qty', 'Rate', 'Narration', 'Amount']],
     body: rows,
     foot,
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
@@ -3440,6 +3618,7 @@ function SaleViewModal({ doc, onClose }) {
                 <th className="text-left px-3 py-2">Unit</th>
                 <th className="text-left px-3 py-2">Qty</th>
                 <th className="text-left px-3 py-2">Rate</th>
+                <th className="text-left px-3 py-2">Narration</th>
                 <th className="text-left px-3 py-2">Amount</th>
               </tr>
             </thead>
@@ -3450,18 +3629,19 @@ function SaleViewModal({ doc, onClose }) {
                   <td className="px-3 py-2">{it.unit}</td>
                   <td className="px-3 py-2">{it.quantity}</td>
                   <td className="px-3 py-2">{formatPkr(it.rate)}</td>
+                  <td className="px-3 py-2 text-gray-500">{it.narration || ''}</td>
                   <td className="px-3 py-2">{formatPkr(it.amount)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </Card>
-        {invoice.invoice_type === 'sale' && (
+        {invoice.invoice_type === 'sale' && (Number(invoice.transport_charges) || Number(invoice.loading_charges) || Number(invoice.tax_amount) || Number(invoice.discount_amount)) ? (
           <div className="text-xs text-gray-500">
             Transport: {formatPkr(invoice.transport_charges)} · Loading: {formatPkr(invoice.loading_charges)} ·
             Tax: {formatPkr(invoice.tax_amount)} · Discount: {formatPkr(invoice.discount_amount)}
           </div>
-        )}
+        ) : null}
         <div className="text-right font-bold" style={{ color: THEME.blue }}>Total: {formatPkr(invoice.total_amount)}</div>
       </div>
     </Modal>
