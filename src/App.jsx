@@ -2857,7 +2857,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   function buildDraft() {
     const pseudoInvoice = {
       invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: vendor?.name },
-      invoice_type: invoiceType, supplier_invoice_no: supplierInvoiceNo,
+      invoice_type: invoiceType, supplier_invoice_no: supplierInvoiceNo, brand_key: brand?.brand_key,
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
     };
@@ -3083,43 +3083,123 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   );
 }
 
-async function buildPurchaseDocPdf(invoice, items) {
+function brandDisplayName(brandKey) {
+  return brandKey === 'skf_polybags' ? 'SKF PolyBags' : 'SKF PolyTex';
+}
+
+// Shared layout for the customer/vendor-facing Purchase & Sale documents —
+// single brand logo (whichever brand the document was created under, not
+// both), bold doc-type header, Bill-To/Vendor block, item table, and a
+// clean totals block. Purchase/Sale differ only in labels, so both call
+// through here instead of duplicating the layout.
+async function buildTradeDocPdf({ invoice, items, docLabel, partyRoleLabel, refLabel, refValue }) {
   const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
-  doc.setFontSize(14);
-  doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  doc.setDrawColor(210);
+  doc.rect(8, 8, pageWidth - 16, pageHeight - 16);
+
+  const brandKey = invoice.brand_key;
+  let textX = 16;
+  try {
+    const logo = brandKey ? BRAND_LOGOS[brandKey] : null;
+    if (logo) {
+      const dataUrl = await loadImageAsDataUrl(logo);
+      doc.addImage(dataUrl, 'PNG', 16, 14, 16, 16);
+      textX = 36;
+    }
+  } catch {
+    // fall back to text-only header if the logo can't be loaded
+  }
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(20);
+  doc.setTextColor(18, 20, 28);
+  doc.text(docLabel.toUpperCase(), textX, 22);
+  doc.setFont(undefined, 'normal');
   doc.setFontSize(10);
   doc.setTextColor(120);
-  doc.text(`${purchaseDocLabel(invoice.invoice_type)} — ${invoice.invoice_no}`, 14, 23);
-  doc.text(`Date: ${formatDate(invoice.invoice_date)}   Vendor: ${invoice.parties?.name || ''}`, 14, 29);
-  let startY = 35;
-  if (invoice.supplier_invoice_no) {
-    doc.text(`Supplier Invoice #: ${invoice.supplier_invoice_no}`, 14, 35);
-    startY = 41;
+  doc.text(brandDisplayName(brandKey), textX, 29);
+
+  const rightX = pageWidth - 16;
+  doc.setFontSize(9);
+  doc.setTextColor(80);
+  doc.text(`Invoice #: ${invoice.invoice_no}`, rightX, 17, { align: 'right' });
+  doc.text(`Date: ${formatDate(invoice.invoice_date)}`, rightX, 23, { align: 'right' });
+  doc.setTextColor(150);
+  doc.text(`Generated: ${formatDate(new Date())}`, rightX, 29, { align: 'right' });
+
+  doc.setDrawColor(230);
+  doc.line(16, 36, pageWidth - 16, 36);
+
+  doc.setFontSize(8);
+  doc.setTextColor(140);
+  doc.text(partyRoleLabel.toUpperCase(), 16, 44);
+  doc.setFontSize(11);
+  doc.setTextColor(18, 20, 28);
+  doc.text(invoice.parties?.name || '', 16, 51);
+
+  let startY = 60;
+  if (refValue) {
+    doc.setFontSize(9);
+    doc.setTextColor(120);
+    doc.text(`${refLabel}: ${refValue}`, 16, 57);
+    startY = 64;
   }
-  doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
 
   const rows = items.map((it) => [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate), it.narration || '', formatPkr(it.amount)]);
   const subtotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
   const extraCharges = Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
     + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0);
   const foot = [['', '', '', '', 'Subtotal', formatPkr(subtotal)]];
-  if (invoice.invoice_type === 'purchase' && extraCharges !== 0) {
+  if (extraCharges !== 0) {
     foot.push(['', '', '', '', 'Transport + Loading + Tax − Discount', formatPkr(extraCharges)]);
   }
-  foot.push(['', '', '', '', 'Grand Total', formatPkr(invoice.total_amount)]);
+  foot.push(['', '', '', '', 'Total', formatPkr(invoice.total_amount)]);
 
   autoTable(doc, {
     startY,
     head: [['Item', 'Unit', 'Qty', 'Rate', 'Narration', 'Amount']],
     body: rows,
     foot,
-    headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
-    footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
+    margin: { left: 16, right: 16 },
+    headStyles: { fillColor: [30, 32, 40], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9 },
+    footStyles: { fillColor: [255, 255, 255], textColor: [90, 90, 90], fontStyle: 'normal', fontSize: 9 },
+    alternateRowStyles: { fillColor: [248, 248, 250] },
     styles: { fontSize: 9, cellPadding: 3 },
+    didParseCell: (data) => {
+      if (data.section === 'foot' && data.row.index === foot.length - 1) {
+        data.cell.styles.fontStyle = 'bold';
+        data.cell.styles.fontSize = 10.5;
+        data.cell.styles.textColor = [18, 20, 28];
+      }
+    },
     didDrawPage: () => drawPdfFooter(doc),
   });
+
+  const afterTableY = doc.lastAutoTable.finalY + 12;
+  if (afterTableY < pageHeight - 24) {
+    doc.setFontSize(8);
+    doc.setTextColor(140);
+    doc.text('NOTES', 16, afterTableY);
+    doc.setFontSize(9);
+    doc.setTextColor(90);
+    doc.text('Thank you for your business.', 16, afterTableY + 6, { maxWidth: pageWidth - 32 });
+  }
+
   return doc;
+}
+
+async function buildPurchaseDocPdf(invoice, items) {
+  return buildTradeDocPdf({
+    invoice, items,
+    docLabel: purchaseDocLabel(invoice.invoice_type),
+    partyRoleLabel: 'Vendor',
+    refLabel: 'Supplier Invoice #',
+    refValue: invoice.supplier_invoice_no,
+  });
 }
 
 function printPdfDoc(doc) {
@@ -3761,7 +3841,7 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   function buildDraft() {
     const pseudoInvoice = {
       invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: customer?.name },
-      invoice_type: invoiceType, customer_po_no: customerPoNo,
+      invoice_type: invoiceType, customer_po_no: customerPoNo, brand_key: brand?.brand_key,
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
     };
@@ -3998,42 +4078,13 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
 }
 
 async function buildSaleDocPdf(invoice, items) {
-  const { jsPDF, autoTable } = await loadPdfLibs();
-  const doc = new jsPDF();
-  doc.setFontSize(14);
-  doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
-  doc.setFontSize(10);
-  doc.setTextColor(120);
-  doc.text(`${saleDocLabel(invoice.invoice_type)} — ${invoice.invoice_no}`, 14, 23);
-  doc.text(`Date: ${formatDate(invoice.invoice_date)}   Customer: ${invoice.parties?.name || ''}`, 14, 29);
-  let startY = 35;
-  if (invoice.customer_po_no) {
-    doc.text(`Customer PO #: ${invoice.customer_po_no}`, 14, 35);
-    startY = 41;
-  }
-  doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
-
-  const rows = items.map((it) => [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate), it.narration || '', formatPkr(it.amount)]);
-  const subtotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
-  const extraCharges = Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
-    + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0);
-  const foot = [['', '', '', '', 'Subtotal', formatPkr(subtotal)]];
-  if (invoice.invoice_type === 'sale' && extraCharges !== 0) {
-    foot.push(['', '', '', '', 'Transport + Loading + Tax − Discount', formatPkr(extraCharges)]);
-  }
-  foot.push(['', '', '', '', 'Grand Total', formatPkr(invoice.total_amount)]);
-
-  autoTable(doc, {
-    startY,
-    head: [['Item', 'Unit', 'Qty', 'Rate', 'Narration', 'Amount']],
-    body: rows,
-    foot,
-    headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
-    footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
-    styles: { fontSize: 9, cellPadding: 3 },
-    didDrawPage: () => drawPdfFooter(doc),
+  return buildTradeDocPdf({
+    invoice, items,
+    docLabel: saleDocLabel(invoice.invoice_type),
+    partyRoleLabel: 'Bill To',
+    refLabel: 'Customer PO #',
+    refValue: invoice.customer_po_no,
   });
-  return doc;
 }
 
 function SaleViewModal({ doc, onClose }) {
