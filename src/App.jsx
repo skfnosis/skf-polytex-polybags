@@ -3993,6 +3993,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [showReport, setShowReport] = useState(false);
   const { show, ToastHost } = useToast();
 
   const dateRef = useRef(null);
@@ -4049,12 +4050,18 @@ function VoucherEntryForm({ tab, onSavedClose }) {
     }
   }
 
-  async function draftPrint() {
-    printPdfDoc(await buildVoucherPdf({
+  function buildDraftPayment() {
+    return {
       voucher_no: savedNo || 'DRAFT', payment_date: date, direction: tab.direction,
       amount, method: tab.kind === 'cash' ? 'cash' : method, notes,
       parties: { name: party?.name }, chart_of_accounts: { name: accounts.find((a) => a.id === cashBankAccountId)?.name },
-    }));
+    };
+  }
+  async function draftPrint() {
+    printPdfDoc(await buildVoucherPdf(buildDraftPayment()));
+  }
+  async function draftExportPdf() {
+    (await buildVoucherPdf(buildDraftPayment())).save(`${savedNo || 'voucher'}.pdf`);
   }
 
   useEffect(() => {
@@ -4122,41 +4129,66 @@ function VoucherEntryForm({ tab, onSavedClose }) {
           <Button onClick={() => save(false)} loading={saving}>Save</Button>
           <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
           <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
+          <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
+          <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
           {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
         </div>
         <p className="text-xs text-gray-500">
           Enter moves Date → Party → Amount → Notes. Ctrl+S saves, Ctrl+P prints the draft.
         </p>
       </div>
+      <SimpleReportModal
+        open={showReport} onClose={() => setShowReport(false)}
+        title={voucherTitle(buildDraftPayment())}
+        buildPdfDoc={() => buildVoucherPdf(buildDraftPayment())}
+        excelData={{
+          columns: ['Voucher No.', 'Date', 'Party', 'Account', 'Method', 'Narration', 'Amount'],
+          rows: [[
+            savedNo || 'DRAFT', formatDate(date), party?.name || '',
+            accounts.find((a) => a.id === cashBankAccountId)?.name || '',
+            tab.kind === 'cash' ? 'cash' : method, notes, Number(amount) || 0,
+          ]],
+        }}
+      />
       <ToastHost />
     </div>
   );
 }
 
+function voucherTitle(payment) {
+  const kind = payment.method === 'cash' ? 'CASH' : 'BANK';
+  const dir = payment.direction === 'receipt' ? 'RECEIPT' : 'PAYMENT';
+  return `${kind} ${dir} VOUCHER`;
+}
+
 async function buildVoucherPdf(payment) {
   const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
+  let textX = 14;
+  try {
+    const [logo1, logo2] = await Promise.all([loadImageAsDataUrl(logoSkfPolytex), loadImageAsDataUrl(logoSkfPolybags)]);
+    doc.addImage(logo1, 'PNG', 14, 8, 14, 14);
+    doc.addImage(logo2, 'PNG', 29, 8, 14, 14);
+    textX = 47;
+  } catch {
+    // fall back to text-only header if the logos can't be loaded
+  }
   doc.setFontSize(14);
-  doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
+  doc.text(voucherTitle(payment), textX, 16);
   doc.setFontSize(10);
   doc.setTextColor(120);
-  doc.text(`Voucher — ${payment.voucher_no}`, 14, 23);
-  doc.text(`Date: ${formatDate(payment.payment_date)}   Party: ${payment.parties?.name || ''}`, 14, 29);
+  doc.text(`Voucher No: ${payment.voucher_no}`, textX, 23);
+  doc.text(`Date: ${formatDate(payment.payment_date)}   Party: ${payment.parties?.name || ''}`, textX, 29);
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
 
   autoTable(doc, {
     startY: 36,
-    head: [[payment.direction === 'receipt' ? 'Received from' : 'Paid to', 'Account', 'Method', 'Amount']],
-    body: [[payment.parties?.name || '', payment.chart_of_accounts?.name || '', payment.method || '', formatPkr(payment.amount)]],
+    head: [[payment.direction === 'receipt' ? 'Received from' : 'Paid to', 'Account', 'Method', 'Narration', 'Amount']],
+    body: [[payment.parties?.name || '', payment.chart_of_accounts?.name || '', payment.method || '', payment.notes || '', formatPkr(payment.amount)]],
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
     didDrawPage: () => drawPdfFooter(doc),
   });
-  if (payment.notes) {
-    doc.setFontSize(9);
-    doc.setTextColor(90);
-    doc.text(`Notes: ${payment.notes}`, 14, doc.lastAutoTable.finalY + 8);
-  }
   return doc;
 }
 
@@ -4190,6 +4222,7 @@ function VoucherOldList({ tab }) {
   const [voucherNo, setVoucherNo] = useState('');
   const [rows, setRows] = useState(null);
   const [viewPayment, setViewPayment] = useState(null);
+  const [reportRow, setReportRow] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const { show, ToastHost } = useToast();
@@ -4268,6 +4301,9 @@ function VoucherOldList({ tab }) {
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
+                <button onClick={() => setReportRow(row)} title="Report" aria-label="Report" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
                 {canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
@@ -4278,6 +4314,15 @@ function VoucherOldList({ tab }) {
           ))}
         </Card>
       )}
+      <SimpleReportModal
+        open={!!reportRow} onClose={() => setReportRow(null)}
+        title={reportRow ? voucherTitle(reportRow) : ''}
+        buildPdfDoc={() => buildVoucherPdf(reportRow)}
+        excelData={reportRow ? {
+          columns: ['Voucher No.', 'Date', 'Party', 'Account', 'Method', 'Narration', 'Amount'],
+          rows: [[reportRow.voucher_no, formatDate(reportRow.payment_date), reportRow.parties?.name || '', reportRow.chart_of_accounts?.name || '', reportRow.method || '', reportRow.notes || '', reportRow.amount]],
+        } : null}
+      />
 
       <VoucherViewModal payment={viewPayment} onClose={() => setViewPayment(null)} />
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
@@ -4330,6 +4375,7 @@ function JournalVoucherEntryForm({ onSavedClose }) {
   const [lines, setLines] = useState([emptyJvLine(), emptyJvLine()]);
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [showReport, setShowReport] = useState(false);
   const { show, ToastHost } = useToast();
 
   const dateRef = useRef(null);
@@ -4391,10 +4437,27 @@ function JournalVoucherEntryForm({ onSavedClose }) {
     }
   }
 
+  function buildDraftJv() {
+    const pseudoVoucher = { voucher_no: savedNo || 'DRAFT', voucher_date: date, narration, total_amount: totalDebit };
+    const pseudoLines = lines
+      .filter((l) => l.accountId && (Number(l.debit) > 0 || Number(l.credit) > 0))
+      .map((l) => ({ chart_of_accounts: { name: l.accountName }, debit: l.debit, credit: l.credit, line_narration: l.narration }));
+    return { pseudoVoucher, pseudoLines };
+  }
+  async function draftPrint() {
+    const { pseudoVoucher, pseudoLines } = buildDraftJv();
+    printPdfDoc(await buildJvPdf(pseudoVoucher, pseudoLines));
+  }
+  async function draftExportPdf() {
+    const { pseudoVoucher, pseudoLines } = buildDraftJv();
+    (await buildJvPdf(pseudoVoucher, pseudoLines)).save(`${pseudoVoucher.voucher_no}.pdf`);
+  }
+
   useEffect(() => {
     function onKey(e) {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(false); }
+      if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); draftPrint(); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -4488,11 +4551,23 @@ function JournalVoucherEntryForm({ onSavedClose }) {
       <div className="flex flex-wrap items-center gap-2 mt-3">
         <Button onClick={() => save(false)} loading={saving} disabled={!balanced}>Save</Button>
         <Button variant="outline" onClick={() => save(true)} loading={saving} disabled={!balanced}>Save &amp; Close</Button>
+        <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
+        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
+        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
-        Enter moves Date → Narration → Account → Debit → Credit → next line. Ctrl+S saves once the two sides balance.
+        Enter moves Date → Narration → Account → Debit → Credit → next line. Ctrl+S saves once the two sides balance, Ctrl+P prints the draft.
       </p>
+      <SimpleReportModal
+        open={showReport} onClose={() => setShowReport(false)}
+        title="Journal Voucher"
+        buildPdfDoc={() => { const { pseudoVoucher, pseudoLines } = buildDraftJv(); return buildJvPdf(pseudoVoucher, pseudoLines); }}
+        excelData={{
+          columns: ['Account', 'Debit', 'Credit', 'Narration'],
+          rows: lines.filter((l) => l.accountId).map((l) => [l.accountName, Number(l.debit) || 0, Number(l.credit) || 0, l.narration || '']),
+        }}
+      />
       <ToastHost />
     </div>
   );
@@ -4501,23 +4576,32 @@ function JournalVoucherEntryForm({ onSavedClose }) {
 async function buildJvPdf(voucher, lines) {
   const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
+  let textX = 14;
+  try {
+    const [logo1, logo2] = await Promise.all([loadImageAsDataUrl(logoSkfPolytex), loadImageAsDataUrl(logoSkfPolybags)]);
+    doc.addImage(logo1, 'PNG', 14, 8, 14, 14);
+    doc.addImage(logo2, 'PNG', 29, 8, 14, 14);
+    textX = 47;
+  } catch {
+    // fall back to text-only header if the logos can't be loaded
+  }
   doc.setFontSize(14);
-  doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
+  doc.text('JOURNAL VOUCHER', textX, 16);
   doc.setFontSize(10);
   doc.setTextColor(120);
-  doc.text(`General Voucher — ${voucher.voucher_no}`, 14, 23);
-  doc.text(`Date: ${formatDate(voucher.voucher_date)}${voucher.narration ? `   ${voucher.narration}` : ''}`, 14, 29);
+  doc.text(`Voucher No: ${voucher.voucher_no}`, textX, 23);
+  doc.text(`Date: ${formatDate(voucher.voucher_date)}${voucher.narration ? `   ${voucher.narration}` : ''}`, textX, 29);
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
 
-  const rows = lines.map((l) => [l.chart_of_accounts?.name || '', l.debit > 0 ? formatPkr(l.debit) : '', l.credit > 0 ? formatPkr(l.credit) : '']);
+  const rows = lines.map((l) => [l.chart_of_accounts?.name || '', l.debit > 0 ? formatPkr(l.debit) : '', l.credit > 0 ? formatPkr(l.credit) : '', l.line_narration || '']);
   const totalDebit = lines.reduce((s, l) => s + Number(l.debit || 0), 0);
   const totalCredit = lines.reduce((s, l) => s + Number(l.credit || 0), 0);
 
   autoTable(doc, {
     startY: 35,
-    head: [['Account', 'Debit', 'Credit']],
+    head: [['Account', 'Debit', 'Credit', 'Narration']],
     body: rows,
-    foot: [['Total', formatPkr(totalDebit), formatPkr(totalCredit)]],
+    foot: [['Total', formatPkr(totalDebit), formatPkr(totalCredit), '']],
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
@@ -4572,6 +4656,7 @@ function JournalVoucherOldList() {
   const [voucherNo, setVoucherNo] = useState('');
   const [rows, setRows] = useState(null);
   const [viewDoc, setViewDoc] = useState(null);
+  const [reportDoc, setReportDoc] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const { show, ToastHost } = useToast();
@@ -4585,6 +4670,10 @@ function JournalVoucherOldList() {
 
   async function handleView(row) {
     try { setViewDoc(await fetchJournalVoucherWithLines(row.id)); }
+    catch (e) { show(`Could not load voucher: ${e.message}`, 'danger'); }
+  }
+  async function handleReport(row) {
+    try { setReportDoc(await fetchJournalVoucherWithLines(row.id)); }
     catch (e) { show(`Could not load voucher: ${e.message}`, 'danger'); }
   }
   async function handlePrint(row) {
@@ -4655,6 +4744,9 @@ function JournalVoucherOldList() {
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
+                <button onClick={() => handleReport(row)} title="Report" aria-label="Report" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
+                  <FileDown size={16} />
+                </button>
                 {canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
@@ -4667,6 +4759,15 @@ function JournalVoucherOldList() {
       )}
 
       <JournalVoucherViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
+      <SimpleReportModal
+        open={!!reportDoc} onClose={() => setReportDoc(null)}
+        title="Journal Voucher"
+        buildPdfDoc={() => buildJvPdf(reportDoc.voucher, reportDoc.lines)}
+        excelData={reportDoc ? {
+          columns: ['Account', 'Debit', 'Credit', 'Narration'],
+          rows: reportDoc.lines.map((l) => [l.chart_of_accounts?.name || '', l.debit, l.credit, l.line_narration || '']),
+        } : null}
+      />
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
       <ToastHost />
     </div>
