@@ -23,6 +23,36 @@ function loadPdfLibs() {
   return _pdfLibsPromise;
 }
 
+// "Save as Image" rasterizes the actual generated PDF report (same one
+// Print/Export PDF use) via pdf.js — never a screenshot of the live ERP
+// screen. Loaded lazily, same pattern as loadPdfLibs.
+let _pdfjsPromise = null;
+function loadPdfJs() {
+  if (!_pdfjsPromise) {
+    _pdfjsPromise = Promise.all([import('pdfjs-dist'), import('pdfjs-dist/build/pdf.worker.min.mjs?url')])
+      .then(([pdfjsLib, workerUrlMod]) => {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrlMod.default;
+        return pdfjsLib;
+      });
+  }
+  return _pdfjsPromise;
+}
+
+async function pdfDocToPngDataUrl(doc, scale = 2.5) {
+  const pdfjsLib = await loadPdfJs();
+  const pdf = await pdfjsLib.getDocument({ data: doc.output('arraybuffer') }).promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return canvas.toDataURL('image/png');
+}
+
 const BRAND_LOGOS = { skf_polytex: logoSkfPolytex, skf_polybags: logoSkfPolybags };
 
 /* ============================================================================
@@ -3102,6 +3132,7 @@ function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [docRef, setDocRef] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [savingImage, setSavingImage] = useState(false);
   const { show, ToastHost } = useToast();
 
   useEffect(() => {
@@ -3116,9 +3147,41 @@ function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
     return () => { alive = false; };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Rasterizes the same generated report the Print/Export buttons use (via
+  // pdf.js), never a screenshot of the live ERP screen.
+  async function handleSaveImage() {
+    if (!docRef) return;
+    setSavingImage(true);
+    try {
+      const dataUrl = await pdfDocToPngDataUrl(docRef);
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `${slug(title)}.png`;
+      a.click();
+    } catch (e) {
+      show(`Could not generate image: ${e.message}`, 'danger');
+    } finally {
+      setSavingImage(false);
+    }
+  }
+
   async function handleShare() {
     if (!docRef) return;
     try {
+      // Prefer sharing the rasterized report as an image — that's what
+      // renders an inline preview in WhatsApp/etc, rather than a bare
+      // document icon. Falls back to the PDF if image generation fails.
+      try {
+        const dataUrl = await pdfDocToPngDataUrl(docRef);
+        const imgBlob = await (await fetch(dataUrl)).blob();
+        const imgFile = new File([imgBlob], `${slug(title)}.png`, { type: 'image/png' });
+        if (navigator.canShare && navigator.canShare({ files: [imgFile] })) {
+          await navigator.share({ files: [imgFile], title });
+          return;
+        }
+      } catch {
+        // fall through to PDF share below
+      }
       const blob = docRef.output('blob');
       const file = new File([blob], `${slug(title)}.pdf`, { type: 'application/pdf' });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -3142,6 +3205,7 @@ function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
           <iframe title="report-preview" src={previewUrl} className="w-full rounded-lg border" style={{ height: 420, borderColor: THEME.line }} />
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" icon={FileDown} onClick={() => printPdfDoc(docRef)}>Print</Button>
+            <Button variant="outline" icon={FileDown} loading={savingImage} onClick={handleSaveImage}>Save Image</Button>
             <Button variant="outline" icon={FileDown} onClick={() => docRef.save(`${slug(title)}.pdf`)}>Export PDF</Button>
             {excelData && (
               <Button variant="outline" icon={FileSpreadsheet} onClick={() => exportExcel({ title, columns: excelData.columns, rows: excelData.rows })}>Export Excel</Button>
