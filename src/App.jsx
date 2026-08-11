@@ -5,13 +5,23 @@ import {
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
   BookOpen, Home, Package,
 } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
 import { supabase } from './supabaseClient.js';
 import logoSkfPolytex from './assets/logo-skf-polytex.png';
 import logoSkfPolybags from './assets/logo-skf-polybags.png';
+
+const GrowthChart = React.lazy(() => import('./GrowthChart.jsx'));
+
+// jsPDF/autoTable are only needed when a document is actually printed or
+// exported — dynamically imported and cached here so the initial bundle
+// (and every page load) doesn't have to carry them upfront.
+let _pdfLibsPromise = null;
+function loadPdfLibs() {
+  if (!_pdfLibsPromise) {
+    _pdfLibsPromise = Promise.all([import('jspdf'), import('jspdf-autotable')])
+      .then(([jsPdfMod, autoTableMod]) => ({ jsPDF: jsPdfMod.default, autoTable: autoTableMod.default }));
+  }
+  return _pdfLibsPromise;
+}
 
 const BRAND_LOGOS = { skf_polytex: logoSkfPolytex, skf_polybags: logoSkfPolybags };
 
@@ -246,10 +256,11 @@ async function fetchStockBalance() {
 }
 
 async function fetchInvoiceWithItems(invoiceId) {
-  const { data: invoice, error } = await supabase.from('invoices').select('*, parties(name)').eq('id', invoiceId).single();
+  const [{ data: invoice, error }, { data: items, error: itemsError }] = await Promise.all([
+    supabase.from('invoices').select('*, parties(name)').eq('id', invoiceId).single(),
+    supabase.from('invoice_items').select('*, items(name)').eq('invoice_id', invoiceId),
+  ]);
   if (error) throw error;
-  const { data: items, error: itemsError } = await supabase.from('invoice_items')
-    .select('*, items(name)').eq('invoice_id', invoiceId);
   if (itemsError) throw itemsError;
   return { invoice, items };
 }
@@ -443,10 +454,11 @@ async function fetchJournalVouchers({ from, to, voucherNo }) {
 }
 
 async function fetchJournalVoucherWithLines(voucherId) {
-  const { data: voucher, error } = await supabase.from('journal_vouchers').select().eq('id', voucherId).single();
+  const [{ data: voucher, error }, { data: lines, error: linesError }] = await Promise.all([
+    supabase.from('journal_vouchers').select().eq('id', voucherId).single(),
+    supabase.from('journal_voucher_lines').select('*, chart_of_accounts(name)').eq('voucher_id', voucherId),
+  ]);
   if (error) throw error;
-  const { data: lines, error: linesError } = await supabase.from('journal_voucher_lines')
-    .select('*, chart_of_accounts(name)').eq('voucher_id', voucherId);
   if (linesError) throw linesError;
   return { voucher, lines };
 }
@@ -1144,6 +1156,7 @@ function drawPdfFooter(doc) {
 // through jsPDF instead sidesteps it entirely, and lets us put our own
 // branded footer on every page instead of the browser's.
 async function buildReportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow }) {
+  const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
   let textX = 14;
   try {
@@ -1192,7 +1205,12 @@ async function printReportPdf(args) {
   printPdfDoc(doc);
 }
 
-function exportExcel({ title, columns, rows }) {
+// xlsx is a large, non-tree-shakeable library only needed when someone
+// actually clicks "Export Excel" — dynamically imported here instead of at
+// the top of the file so it doesn't sit in the bundle every page load has
+// to download before rendering.
+async function exportExcel({ title, columns, rows }) {
+  const XLSX = await import('xlsx');
   const ws = XLSX.utils.aoa_to_sheet([columns, ...rows]);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Report');
@@ -1929,16 +1947,15 @@ function DashboardScreen() {
           ))}
         </div>
         <div style={{ width: '100%', height: 260 }}>
-          <ResponsiveContainer>
-            <LineChart data={graphData}>
-              <CartesianGrid strokeDasharray="3 3" stroke={THEME.line} />
-              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatPkr(v)} width={80} />
-              <Tooltip formatter={(v) => formatPkr(v)} />
-              <Legend />
-              <Line type="monotone" dataKey={profitToggle} name={MONTHLY_PROFIT_TOGGLES.find((t) => t.key === profitToggle).label} stroke={THEME.emerald} strokeWidth={2} dot={{ r: 3 }} />
-            </LineChart>
-          </ResponsiveContainer>
+          <React.Suspense fallback={<div className="h-full flex items-center justify-center"><Spinner /></div>}>
+            <GrowthChart
+              data={graphData}
+              dataKey={profitToggle}
+              name={MONTHLY_PROFIT_TOGGLES.find((t) => t.key === profitToggle).label}
+              stroke={THEME.emerald}
+              formatValue={formatPkr}
+            />
+          </React.Suspense>
         </div>
       </Card>
 
@@ -2423,13 +2440,13 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     }));
     return { pseudoInvoice, pseudoItems };
   }
-  function draftPrint() {
+  async function draftPrint() {
     const { pseudoInvoice, pseudoItems } = buildDraft();
-    printPdfDoc(buildPurchaseDocPdf(pseudoInvoice, pseudoItems));
+    printPdfDoc(await buildPurchaseDocPdf(pseudoInvoice, pseudoItems));
   }
-  function draftExportPdf() {
+  async function draftExportPdf() {
     const { pseudoInvoice, pseudoItems } = buildDraft();
-    buildPurchaseDocPdf(pseudoInvoice, pseudoItems).save(`${pseudoInvoice.invoice_no}.pdf`);
+    (await buildPurchaseDocPdf(pseudoInvoice, pseudoItems)).save(`${pseudoInvoice.invoice_no}.pdf`);
   }
 
   useEffect(() => {
@@ -2636,7 +2653,8 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
   );
 }
 
-function buildPurchaseDocPdf(invoice, items) {
+async function buildPurchaseDocPdf(invoice, items) {
+  const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
   doc.setFontSize(14);
   doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
@@ -2804,11 +2822,11 @@ function PurchaseOldList({ invoiceType }) {
     catch (e) { show(`Could not load document: ${e.message}`, 'danger'); }
   }
   async function handlePrint(row) {
-    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); printPdfDoc(buildPurchaseDocPdf(invoice, items)); }
+    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); printPdfDoc(await buildPurchaseDocPdf(invoice, items)); }
     catch (e) { show(`Could not print: ${e.message}`, 'danger'); }
   }
   async function handleExportPdf(row) {
-    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); buildPurchaseDocPdf(invoice, items).save(`${invoice.invoice_no}.pdf`); }
+    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); (await buildPurchaseDocPdf(invoice, items)).save(`${invoice.invoice_no}.pdf`); }
     catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
   }
   async function handleExportExcel(row) {
@@ -3146,13 +3164,13 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     }));
     return { pseudoInvoice, pseudoItems };
   }
-  function draftPrint() {
+  async function draftPrint() {
     const { pseudoInvoice, pseudoItems } = buildDraft();
-    printPdfDoc(buildSaleDocPdf(pseudoInvoice, pseudoItems));
+    printPdfDoc(await buildSaleDocPdf(pseudoInvoice, pseudoItems));
   }
-  function draftExportPdf() {
+  async function draftExportPdf() {
     const { pseudoInvoice, pseudoItems } = buildDraft();
-    buildSaleDocPdf(pseudoInvoice, pseudoItems).save(`${pseudoInvoice.invoice_no}.pdf`);
+    (await buildSaleDocPdf(pseudoInvoice, pseudoItems)).save(`${pseudoInvoice.invoice_no}.pdf`);
   }
 
   useEffect(() => {
@@ -3363,7 +3381,8 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
   );
 }
 
-function buildSaleDocPdf(invoice, items) {
+async function buildSaleDocPdf(invoice, items) {
+  const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
   doc.setFontSize(14);
   doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
@@ -3490,11 +3509,11 @@ function SaleOldList({ invoiceType }) {
     catch (e) { show(`Could not load document: ${e.message}`, 'danger'); }
   }
   async function handlePrint(row) {
-    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); printPdfDoc(buildSaleDocPdf(invoice, items)); }
+    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); printPdfDoc(await buildSaleDocPdf(invoice, items)); }
     catch (e) { show(`Could not print: ${e.message}`, 'danger'); }
   }
   async function handleExportPdf(row) {
-    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); buildSaleDocPdf(invoice, items).save(`${invoice.invoice_no}.pdf`); }
+    try { const { invoice, items } = await fetchInvoiceWithItems(row.id); (await buildSaleDocPdf(invoice, items)).save(`${invoice.invoice_no}.pdf`); }
     catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
   }
   async function handleExportExcel(row) {
@@ -3718,8 +3737,8 @@ function VoucherEntryForm({ tab, onSavedClose }) {
     }
   }
 
-  function draftPrint() {
-    printPdfDoc(buildVoucherPdf({
+  async function draftPrint() {
+    printPdfDoc(await buildVoucherPdf({
       voucher_no: savedNo || 'DRAFT', payment_date: date, direction: tab.direction,
       amount, method: tab.kind === 'cash' ? 'cash' : method, notes,
       parties: { name: party?.name }, chart_of_accounts: { name: accounts.find((a) => a.id === cashBankAccountId)?.name },
@@ -3802,7 +3821,8 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   );
 }
 
-function buildVoucherPdf(payment) {
+async function buildVoucherPdf(payment) {
+  const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
   doc.setFontSize(14);
   doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
@@ -3870,8 +3890,8 @@ function VoucherOldList({ tab }) {
     return () => { alive = false; };
   }, [tab, from, to, party, voucherNo, refreshKey]);
 
-  async function handlePrint(row) { printPdfDoc(buildVoucherPdf(row)); }
-  async function handleExportPdf(row) { buildVoucherPdf(row).save(`${row.voucher_no}.pdf`); }
+  async function handlePrint(row) { printPdfDoc(await buildVoucherPdf(row)); }
+  async function handleExportPdf(row) { (await buildVoucherPdf(row)).save(`${row.voucher_no}.pdf`); }
   function handleExportExcel(row) {
     exportExcel({
       title: row.voucher_no,
@@ -4166,7 +4186,8 @@ function JournalVoucherEntryForm({ onSavedClose }) {
   );
 }
 
-function buildJvPdf(voucher, lines) {
+async function buildJvPdf(voucher, lines) {
+  const { jsPDF, autoTable } = await loadPdfLibs();
   const doc = new jsPDF();
   doc.setFontSize(14);
   doc.text('SKF PolyTex / SKF PolyBags', 14, 16);
@@ -4255,11 +4276,11 @@ function JournalVoucherOldList() {
     catch (e) { show(`Could not load voucher: ${e.message}`, 'danger'); }
   }
   async function handlePrint(row) {
-    try { const { voucher, lines } = await fetchJournalVoucherWithLines(row.id); printPdfDoc(buildJvPdf(voucher, lines)); }
+    try { const { voucher, lines } = await fetchJournalVoucherWithLines(row.id); printPdfDoc(await buildJvPdf(voucher, lines)); }
     catch (e) { show(`Could not print: ${e.message}`, 'danger'); }
   }
   async function handleExportPdf(row) {
-    try { const { voucher, lines } = await fetchJournalVoucherWithLines(row.id); buildJvPdf(voucher, lines).save(`${voucher.voucher_no}.pdf`); }
+    try { const { voucher, lines } = await fetchJournalVoucherWithLines(row.id); (await buildJvPdf(voucher, lines)).save(`${voucher.voucher_no}.pdf`); }
     catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
   }
   async function handleExportExcel(row) {
