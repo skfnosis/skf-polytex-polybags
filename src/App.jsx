@@ -293,16 +293,25 @@ async function updateAppSettings({ lowCashThreshold, highPayablesThreshold }) {
 }
 
 async function fetchAccountLedger(accountId, { from, to } = {}) {
+  let openingBalance = 0;
+  if (from) {
+    const { data: prior, error: priorError } = await supabase.from('ledger_entries')
+      .select('debit, credit').eq('account_id', accountId).lt('entry_date', from);
+    if (priorError) throw priorError;
+    openingBalance = (prior || []).reduce((s, r) => s + Number(r.debit) - Number(r.credit), 0);
+  }
+
   let q = supabase.from('ledger_entries').select('*, parties(name)').eq('account_id', accountId);
   if (from) q = q.gte('entry_date', from);
   if (to) q = q.lte('entry_date', to);
   const { data, error } = await q.order('entry_date').order('created_at');
   if (error) throw error;
-  let running = 0;
-  return (data || []).map((r) => {
+  let running = openingBalance;
+  const rows = (data || []).map((r) => {
     running += Number(r.debit) - Number(r.credit);
     return { ...r, running_balance: running };
   });
+  return { rows, openingBalance };
 }
 
 async function fetchCashBankBalances() {
@@ -494,15 +503,6 @@ async function fetchInvoices({ invoiceType, from, to, brandKey, partyId, invoice
   if (invoiceNo) q = q.ilike('invoice_no', `%${invoiceNo}%`);
   if (linkedOrderId) q = q.eq('linked_order_id', linkedOrderId);
   const { data, error } = await q.order('invoice_date');
-  if (error) throw error;
-  return data;
-}
-
-async function fetchGeneralLedger({ from, to, partyId }) {
-  let q = supabase.from('ledger_entries').select('*, chart_of_accounts(name), parties(name)')
-    .gte('entry_date', from).lte('entry_date', to);
-  if (partyId) q = q.eq('party_id', partyId);
-  const { data, error } = await q.order('entry_date');
   if (error) throw error;
   return data;
 }
@@ -1765,22 +1765,31 @@ function AccountListModal({ open, onClose, title, rows, renderRow }) {
   );
 }
 
-function AccountLedgerModal({ account, from, to, onClose }) {
-  const [rows, setRows] = useState(null);
+function AccountLedgerBody({ account, from, to }) {
+  const [data, setData] = useState(null);
+  const [showReport, setShowReport] = useState(false);
 
   useEffect(() => {
-    if (!account) { setRows(null); return; }
+    if (!account) { setData(null); return; }
     let alive = true;
-    setRows(null);
-    fetchAccountLedger(account.id, { from, to }).then((r) => { if (alive) setRows(r); });
+    setData(null);
+    fetchAccountLedger(account.id, { from, to }).then((r) => { if (alive) setData(r); });
     return () => { alive = false; };
   }, [account, from, to]);
 
+  if (!account) return null;
+  if (data === null) return <div className="py-10 flex justify-center"><Spinner /></div>;
+
+  const rows = data.rows;
+
   return (
-    <Modal open={!!account} onClose={onClose} title={account ? `${account.name} — Ledger` : ''} width={640}>
-      {rows === null ? (
-        <div className="py-10 flex justify-center"><Spinner /></div>
-      ) : rows.length === 0 ? (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)} disabled={rows.length === 0 && !data.openingBalance}>
+          Report
+        </Button>
+      </div>
+      {rows.length === 0 && !data.openingBalance ? (
         <EmptyState>No transactions in this range.</EmptyState>
       ) : (
         <Card className="overflow-auto" style={{ borderColor: THEME.line }}>
@@ -1788,17 +1797,25 @@ function AccountLedgerModal({ account, from, to, onClose }) {
             <thead>
               <tr style={{ backgroundColor: THEME.surface }}>
                 <th className="text-left px-3 py-2">Date</th>
-                <th className="text-left px-3 py-2">Party</th>
+                <th className="text-left px-3 py-2">Voucher No.</th>
+                <th className="text-left px-3 py-2">Narration</th>
                 <th className="text-left px-3 py-2">Debit</th>
                 <th className="text-left px-3 py-2">Credit</th>
                 <th className="text-left px-3 py-2">Balance</th>
               </tr>
             </thead>
             <tbody>
+              {data.openingBalance !== 0 && (
+                <tr className="border-t bg-gray-50" style={{ borderColor: THEME.line }}>
+                  <td className="px-3 py-2" colSpan={5}>Opening Balance</td>
+                  <td className="px-3 py-2 font-medium">{formatPkr(data.openingBalance)}</td>
+                </tr>
+              )}
               {rows.map((r) => (
                 <tr key={r.id} className="border-t" style={{ borderColor: THEME.line }}>
                   <td className="px-3 py-2">{formatDate(r.entry_date)}</td>
-                  <td className="px-3 py-2">{r.parties?.name || '—'}</td>
+                  <td className="px-3 py-2">{r.doc_no || ''}</td>
+                  <td className="px-3 py-2 text-gray-500">{r.narration || ''}</td>
                   <td className="px-3 py-2">{r.debit > 0 ? formatPkr(r.debit) : ''}</td>
                   <td className="px-3 py-2">{r.credit > 0 ? formatPkr(r.credit) : ''}</td>
                   <td className="px-3 py-2 font-medium">{formatPkr(r.running_balance)}</td>
@@ -1808,8 +1825,74 @@ function AccountLedgerModal({ account, from, to, onClose }) {
           </table>
         </Card>
       )}
+      <SimpleReportModal
+        open={showReport} onClose={() => setShowReport(false)}
+        title={`General Ledger — ${account.name}`}
+        buildPdfDoc={() => buildLedgerPdf({ account, rows, openingBalance: data.openingBalance, from, to })}
+        excelData={{
+          columns: ['Date', 'Voucher No.', 'Narration', 'Debit', 'Credit', 'Balance'],
+          rows: [
+            ...(data.openingBalance ? [['', '', 'Opening Balance', '', '', data.openingBalance]] : []),
+            ...rows.map((r) => [formatDate(r.entry_date), r.doc_no || '', r.narration || '', Number(r.debit) || '', Number(r.credit) || '', r.running_balance]),
+          ],
+        }}
+      />
+    </div>
+  );
+}
+
+function AccountLedgerModal({ account, from, to, onClose }) {
+  return (
+    <Modal open={!!account} onClose={onClose} title={account ? `${account.name} — Ledger` : ''} width={640}>
+      <AccountLedgerBody account={account} from={from} to={to} />
     </Modal>
   );
+}
+
+// Professional General Ledger report — SKF logo, GENERAL LEDGER title, date
+// range, account name, then Date/Voucher No./Narration/Debit/Credit/Balance
+// with the opening balance carried in as the first row.
+async function buildLedgerPdf({ account, rows, openingBalance, from, to }) {
+  const { jsPDF, autoTable } = await loadPdfLibs();
+  const doc = new jsPDF();
+  let textX = 14;
+  try {
+    const [logo1, logo2] = await Promise.all([loadImageAsDataUrl(logoSkfPolytex), loadImageAsDataUrl(logoSkfPolybags)]);
+    doc.addImage(logo1, 'PNG', 14, 8, 14, 14);
+    doc.addImage(logo2, 'PNG', 29, 8, 14, 14);
+    textX = 47;
+  } catch {
+    // fall back to text-only header if the logos can't be loaded
+  }
+  doc.setFontSize(14);
+  doc.text('GENERAL LEDGER', textX, 16);
+  doc.setFontSize(10);
+  doc.setTextColor(120);
+  doc.text(account?.name || '', textX, 23);
+  const rangeLabel = from && to ? `${formatDate(from)} to ${formatDate(to)}` : 'All dates';
+  doc.text(rangeLabel, textX, 29);
+  doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
+
+  const body = [
+    ...(openingBalance ? [['', '', 'Opening Balance', '', '', formatPkr(openingBalance)]] : []),
+    ...rows.map((r) => [
+      formatDate(r.entry_date), r.doc_no || '', r.narration || '',
+      r.debit > 0 ? formatPkr(r.debit) : '', r.credit > 0 ? formatPkr(r.credit) : '', formatPkr(r.running_balance),
+    ]),
+  ];
+  const closing = rows.length > 0 ? rows[rows.length - 1].running_balance : openingBalance;
+
+  autoTable(doc, {
+    startY: 35,
+    head: [['Date', 'Voucher No.', 'Narration', 'Debit', 'Credit', 'Balance']],
+    body,
+    foot: [['', '', '', '', 'Closing Balance', formatPkr(closing)]],
+    headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
+    footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
+    styles: { fontSize: 8.5, cellPadding: 3 },
+    didDrawPage: () => drawPdfFooter(doc),
+  });
+  return doc;
 }
 
 const MONTHLY_PROFIT_TOGGLES = [
@@ -2804,6 +2887,23 @@ function printPdfDoc(doc) {
 // the PDF in a new tab on desktop or any browser without Web Share) so a
 // bill can go straight to a vendor/customer over WhatsApp from a phone.
 function DocReportModal({ open, onClose, title, buildDoc, buildPdf }) {
+  return (
+    <SimpleReportModal
+      open={open} onClose={onClose} title={title}
+      buildPdfDoc={() => {
+        const { pseudoInvoice, pseudoItems } = buildDoc();
+        return buildPdf(pseudoInvoice, pseudoItems);
+      }}
+    />
+  );
+}
+
+// Generic report preview shared by vouchers, General Ledger, and anywhere
+// else a document needs Preview/Print/Export/Share (+ optional Excel with
+// real structured rows, not a screenshot). buildPdfDoc is a zero-arg async
+// function that returns a ready jsPDF doc — callers close over whatever
+// data they need to build it.
+function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [docRef, setDocRef] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2813,13 +2913,11 @@ function DocReportModal({ open, onClose, title, buildDoc, buildPdf }) {
     if (!open) { setPreviewUrl(null); setDocRef(null); return; }
     let alive = true;
     setLoading(true);
-    (async () => {
-      const { pseudoInvoice, pseudoItems } = buildDoc();
-      const doc = await buildPdf(pseudoInvoice, pseudoItems);
+    Promise.resolve(buildPdfDoc()).then((doc) => {
       if (!alive) return;
       setDocRef(doc);
       setPreviewUrl(doc.output('bloburl'));
-    })().finally(() => { if (alive) setLoading(false); });
+    }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2849,7 +2947,10 @@ function DocReportModal({ open, onClose, title, buildDoc, buildPdf }) {
           <iframe title="report-preview" src={previewUrl} className="w-full rounded-lg border" style={{ height: 420, borderColor: THEME.line }} />
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" icon={FileDown} onClick={() => printPdfDoc(docRef)}>Print</Button>
-            <Button variant="outline" icon={FileDown} onClick={() => docRef.save(`${slug(title)}.pdf`)}>Export</Button>
+            <Button variant="outline" icon={FileDown} onClick={() => docRef.save(`${slug(title)}.pdf`)}>Export PDF</Button>
+            {excelData && (
+              <Button variant="outline" icon={FileSpreadsheet} onClick={() => exportExcel({ title, columns: excelData.columns, rows: excelData.rows })}>Export Excel</Button>
+            )}
             <Button icon={FileDown} onClick={handleShare}>Share</Button>
           </div>
         </div>
@@ -5158,33 +5259,6 @@ function referenceLabel(type) {
   }
 }
 
-function LedgerReport({ from, to, brand }) {
-  const [rows, setRows] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    setRows(null);
-    fetchGeneralLedger({ from, to }).then((r) => { if (alive) setRows(r); });
-    return () => { alive = false; };
-  }, [from, to]);
-
-  if (rows === null) return <div className="py-20 flex justify-center"><Spinner /></div>;
-
-  const table = rows.map((r) => [
-    formatDate(r.entry_date), r.chart_of_accounts?.name || '', r.parties?.name || '',
-    r.debit > 0 ? formatPkr(r.debit) : '', r.credit > 0 ? formatPkr(r.credit) : '',
-  ]);
-
-  return (
-    <ReportTable
-      title="General Ledger"
-      brandLabel={brand?.display_name}
-      brandLogo={brand?.brand_key ? BRAND_LOGOS[brand.brand_key] : null}
-      columns={['Date', 'Account', 'Party', 'Debit', 'Credit']}
-      rows={table}
-    />
-  );
-}
-
 function TrialBalanceReport() {
   const [rows, setRows] = useState(null);
   useEffect(() => { fetchTrialBalance().then(setRows); }, []);
@@ -5401,10 +5475,20 @@ function AccountsTab() {
 function GeneralLedgerTab() {
   const [from, setFrom] = useState(toDateInput(startOfMonth()));
   const [to, setTo] = useState(toDateInput(new Date()));
+  const [account, setAccount] = useState(null);
   return (
     <div>
-      <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
-      <LedgerReport from={from} to={to} />
+      <div className="flex flex-wrap items-end gap-4 mb-5">
+        <div className="max-w-xs w-full">
+          <AccountPicker value={account} onChange={setAccount} />
+        </div>
+        <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+      </div>
+      {account ? (
+        <AccountLedgerBody account={account} from={from} to={to} />
+      ) : (
+        <EmptyState>Select an account to view its General Ledger.</EmptyState>
+      )}
     </div>
   );
 }
