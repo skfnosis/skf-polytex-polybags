@@ -791,6 +791,74 @@ function UnsavedChangesModal({ open, onStay, onLeave }) {
 }
 
 // ============================================================================
+// DRAFT AUTOSAVE — every change to an in-progress Purchase/Sale bill is
+// mirrored to localStorage (debounced), so a crash, accidental tab close, or
+// interruption before the Save button is clicked never loses already-typed
+// lines. This is deliberately client-side only, not a server-side draft
+// invoice: a half-finished document would otherwise need its own "draft"
+// status woven through invoice numbering, stock, and ledger posting just to
+// stay unbalanced-safe, for a problem this solves without touching the
+// accounting schema at all. Cleared the moment the bill actually saves.
+// ============================================================================
+function useDraftAutosave(storageKey, snapshot, isDirty) {
+  const [restorable, setRestorable] = useState(null); // { savedAt, data } | null
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.data) setRestorable(parsed);
+      }
+    } catch {
+      // corrupted/blocked storage — just skip restore, not fatal
+    }
+    setChecked(true);
+  }, [storageKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!checked || restorable) return; // don't clobber an unresolved restore prompt
+    const t = setTimeout(() => {
+      try {
+        if (isDirty) {
+          localStorage.setItem(storageKey, JSON.stringify({ savedAt: Date.now(), data: snapshot }));
+        } else {
+          localStorage.removeItem(storageKey);
+        }
+      } catch {
+        // storage full/blocked — draft autosave is best-effort, not critical
+      }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [storageKey, snapshot, isDirty, checked, restorable]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function clearDraft() {
+    try { localStorage.removeItem(storageKey); } catch { /* best-effort */ }
+    setRestorable(null);
+  }
+  function dismissRestore() {
+    clearDraft();
+  }
+
+  return { restorable, clearDraft, dismissRestore };
+}
+
+function RestoreDraftModal({ open, savedAt, onRestore, onDiscard }) {
+  return (
+    <Modal open={open} onClose={onDiscard} title="Unsaved Draft Found" width={400}>
+      <p className="text-sm text-gray-600 mb-4">
+        You have an unsaved entry from {savedAt ? new Date(savedAt).toLocaleString() : 'earlier'} that never got saved. Restore it and pick up where you left off?
+      </p>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onDiscard}>Discard</Button>
+        <Button onClick={onRestore}>Restore Draft</Button>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
 // PARTY PICKER — searchable combobox with inline "add new party"
 // ============================================================================
 
@@ -2716,6 +2784,24 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
+  const draftKey = `skf_draft_purchase_${invoiceType}`;
+  const draftSnapshot = { brandKey: brand?.brand_key, vendor: vendor ? { id: vendor.id, name: vendor.name } : null, date, supplierInvoiceNo, lines };
+  const { restorable: draftRestorable, clearDraft, dismissRestore } = useDraftAutosave(draftKey, draftSnapshot, isDirty);
+
+  function restoreDraft() {
+    const d = draftRestorable?.data;
+    if (!d) return;
+    if (d.brandKey) {
+      const b = brands.find((x) => x.brand_key === d.brandKey);
+      if (b) setBrand(b);
+    }
+    if (d.vendor) { setVendor(d.vendor); setVendorResetKey((k) => k + 1); }
+    if (d.date) setDate(d.date);
+    if (d.supplierInvoiceNo) setSupplierInvoiceNo(d.supplierInvoiceNo);
+    if (Array.isArray(d.lines) && d.lines.length) setLines(d.lines);
+    clearDraft();
+  }
+
   useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -2845,6 +2931,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
       const { invoice } = await fetchInvoiceWithItems(id);
       show(`Saved. ${invoice.invoice_no} created.`);
       setSavedNo(invoice.invoice_no);
+      clearDraft();
       resetForm();
       if (closeAfter) onSavedClose?.();
     } catch (e) {
@@ -3078,6 +3165,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
         title={title} buildDoc={() => buildDraft()} buildPdf={buildPurchaseDocPdf}
       />
       <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
+      <RestoreDraftModal open={!!draftRestorable} savedAt={draftRestorable?.savedAt} onRestore={restoreDraft} onDiscard={dismissRestore} />
       <ToastHost />
     </div>
   );
@@ -3683,6 +3771,24 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
+  const draftKey = `skf_draft_sale_${invoiceType}`;
+  const draftSnapshot = { brandKey: brand?.brand_key, customer: customer ? { id: customer.id, name: customer.name } : null, date, customerPoNo, lines };
+  const { restorable: draftRestorable, clearDraft, dismissRestore } = useDraftAutosave(draftKey, draftSnapshot, isDirty);
+
+  function restoreDraft() {
+    const d = draftRestorable?.data;
+    if (!d) return;
+    if (d.brandKey) {
+      const b = brands.find((x) => x.brand_key === d.brandKey);
+      if (b) setBrand(b);
+    }
+    if (d.customer) { setCustomer(d.customer); setCustomerResetKey((k) => k + 1); }
+    if (d.date) setDate(d.date);
+    if (d.customerPoNo) setCustomerPoNo(d.customerPoNo);
+    if (Array.isArray(d.lines) && d.lines.length) setLines(d.lines);
+    clearDraft();
+  }
+
   useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -3824,6 +3930,7 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
       const { invoice } = await fetchInvoiceWithItems(id);
       show(`Saved. ${invoice.invoice_no} created.`);
       setSavedNo(invoice.invoice_no);
+      clearDraft();
       resetForm();
       if (isBill) fetchStockBalance().then((rows) => {
         const map = {};
@@ -4072,6 +4179,7 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
         title={title} buildDoc={() => buildDraft()} buildPdf={buildSaleDocPdf}
       />
       <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
+      <RestoreDraftModal open={!!draftRestorable} savedAt={draftRestorable?.savedAt} onRestore={restoreDraft} onDiscard={dismissRestore} />
       <ToastHost />
     </div>
   );
