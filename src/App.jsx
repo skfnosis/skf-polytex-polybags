@@ -685,6 +685,82 @@ function useToast() {
 }
 
 // ============================================================================
+// UNSAVED CHANGES GUARD — shared by every editable entry form (Purchase,
+// Sale, CRV/BRV/CPV/BPV, Journal Voucher). Two browser mechanisms, two very
+// different levels of control:
+//
+// 1. beforeunload — fires on tab close / refresh / typed URL navigation.
+//    Browsers show only their own generic "Leave site?" dialog here and
+//    ignore any custom text — a hard security restriction, not something
+//    this app can style or word. We just arm/disarm it.
+// 2. In-app physical/mobile Back button — this app has no URL routing at
+//    all (pages are plain React state), so there's nothing for Back to
+//    normally do except exit the SPA. We trap it with a dummy
+//    history.pushState entry: the resulting popstate is intercepted before
+//    it takes effect, our own Stay/Leave modal is shown, and the trap is
+//    re-armed so the page doesn't actually move until the user confirms.
+//    Each intercepted press adds one level to unwind, which unwindGuard()
+//    accounts for when the user finally chooses to leave.
+// ============================================================================
+function useUnsavedChangesGuard(isDirty) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const armedRef = useRef(false);
+  const depthRef = useRef(0);
+
+  useEffect(() => {
+    function onBeforeUnload(e) {
+      if (!isDirty) return;
+      e.preventDefault();
+      e.returnValue = '';
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isDirty]);
+
+  useEffect(() => {
+    if (!isDirty) { armedRef.current = false; depthRef.current = 0; return; }
+    if (!armedRef.current) {
+      window.history.pushState({ __unsavedGuard: true }, '');
+      armedRef.current = true;
+      depthRef.current = 1;
+    }
+    function onPopState() {
+      if (!armedRef.current) return;
+      setShowConfirm(true);
+      window.history.pushState({ __unsavedGuard: true }, '');
+      depthRef.current += 1;
+    }
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [isDirty]);
+
+  function stay() {
+    setShowConfirm(false);
+  }
+  function leave() {
+    armedRef.current = false;
+    setShowConfirm(false);
+    window.history.go(-depthRef.current);
+  }
+
+  return { showUnsavedConfirm: showConfirm, stayOnPage: stay, leavePage: leave };
+}
+
+function UnsavedChangesModal({ open, onStay, onLeave }) {
+  return (
+    <Modal open={open} onClose={onStay} title="Unsaved Changes" width={380}>
+      <p className="text-sm text-gray-600 mb-4">
+        You have unsaved changes on this page. If you leave now, they will be lost.
+      </p>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onStay}>Stay on Page</Button>
+        <Button variant="danger" onClick={onLeave}>Leave Page</Button>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
 // PARTY PICKER — searchable combobox with inline "add new party"
 // ============================================================================
 
@@ -2592,6 +2668,10 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     return lineRefs.current[i];
   }
 
+  const isDirty = !!vendor || !!supplierInvoiceNo.trim() || !!linkedOrder
+    || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
+  const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
+
   useEffect(() => {
     fetchBrands().then((rows) => { setBrands(rows); if (rows.length && !brand) setBrand(rows[0]); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2947,6 +3027,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
         open={showReport} onClose={() => setShowReport(false)}
         title={title} buildDoc={() => buildDraft()} buildPdf={buildPurchaseDocPdf}
       />
+      <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
       <ToastHost />
     </div>
   );
@@ -3420,6 +3501,10 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     return lineRefs.current[i];
   }
 
+  const isDirty = !!customer || !!customerPoNo.trim() || !!linkedOrder
+    || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
+  const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
+
   useEffect(() => {
     fetchBrands().then((rows) => { setBrands(rows); if (rows.length && !brand) setBrand(rows[0]); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3802,6 +3887,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
         open={showReport} onClose={() => setShowReport(false)}
         title={title} buildDoc={() => buildDraft()} buildPdf={buildSaleDocPdf}
       />
+      <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
       <ToastHost />
     </div>
   );
@@ -4117,6 +4203,9 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   const amountRef = useRef(null);
   const notesRef = useRef(null);
 
+  const isDirty = !!party || !!amount.trim() || !!notes.trim();
+  const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
+
   useEffect(() => { dateRef.current?.focus(); }, []);
 
   useEffect(() => {
@@ -4266,6 +4355,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
           ]],
         }}
       />
+      <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
       <ToastHost />
     </div>
   );
@@ -4504,6 +4594,10 @@ function JournalVoucherEntryForm({ onSavedClose }) {
     return lineRefs.current[i];
   }
 
+  const isDirty = !!narration.trim()
+    || lines.some((l) => l.accountId || Number(l.debit) > 0 || Number(l.credit) > 0 || (l.narration && l.narration.trim()));
+  const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
+
   useEffect(() => { dateRef.current?.focus(); }, []);
 
   function addLine(focus = true) {
@@ -4684,6 +4778,7 @@ function JournalVoucherEntryForm({ onSavedClose }) {
           rows: lines.filter((l) => l.accountId).map((l) => [l.accountName, Number(l.debit) || 0, Number(l.credit) || 0, l.narration || '']),
         }}
       />
+      <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
       <ToastHost />
     </div>
   );
