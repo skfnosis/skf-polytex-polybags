@@ -3,7 +3,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
-  BookOpen, Home, Package,
+  BookOpen, Home, Package, Eye, EyeOff,
 } from 'lucide-react';
 import { supabase } from './supabaseClient.js';
 import logoSkfPolytex from './assets/logo-skf-polytex.png';
@@ -68,6 +68,11 @@ function formatPkr(amount) {
   const withCommas = n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const sign = Number(amount) < 0 ? '-' : '';
   return `Rs ${sign}${withCommas}`;
+}
+
+const MASKED_AMOUNT = 'Rs ••••••';
+function maskPkr(amount, visible) {
+  return visible ? formatPkr(amount) : MASKED_AMOUNT;
 }
 
 function formatDate(d) {
@@ -1713,14 +1718,14 @@ function StatCard({ title, icon: Icon, color, value, sub, onClick, emphasize, hi
 // with each individual account listed underneath in smaller text when
 // there's more than one — e.g. two bank accounts still show one Bank
 // Balance card, not two. Single-account case just shows the big number.
-function CashBankCard({ title, icon: Icon, total, accounts, onSelectAccount }) {
+function CashBankCard({ title, icon: Icon, total, accounts, onSelectAccount, visible = true }) {
   return (
     <Card className="p-4 h-full">
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm font-medium text-gray-500">{title}</span>
         {Icon && <Icon size={16} style={{ color: THEME.cashGreen }} />}
       </div>
-      <div className="font-bold text-2xl" style={{ color: THEME.cashGreen }}>{formatPkr(total)}</div>
+      <div className="font-bold text-2xl" style={{ color: THEME.cashGreen }}>{maskPkr(total, visible)}</div>
       {accounts.length > 1 && (
         <div className="mt-2 space-y-1">
           {accounts.map((a) => (
@@ -1730,7 +1735,7 @@ function CashBankCard({ title, icon: Icon, total, accounts, onSelectAccount }) {
               className="w-full flex items-center justify-between text-xs text-gray-500 hover:text-gray-800"
             >
               <span>{a.name}</span>
-              <span>{formatPkr(a.balance)}</span>
+              <span>{maskPkr(a.balance, visible)}</span>
             </button>
           ))}
         </div>
@@ -1833,6 +1838,9 @@ function DashboardScreen() {
   const [ledgerAccount, setLedgerAccount] = useState(null); // { id, name } | null
   const [receivablesModalOpen, setReceivablesModalOpen] = useState(false);
   const [payablesModalOpen, setPayablesModalOpen] = useState(false);
+  // Hidden by default every time the dashboard opens — pure client-side
+  // toggle (no refetch), never persisted, so a fresh open always re-masks.
+  const [balancesVisible, setBalancesVisible] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -1915,10 +1923,20 @@ function DashboardScreen() {
       )}
 
       {/* Row 1 — Cash & Bank */}
-      <SectionHeading>Cash &amp; Bank</SectionHeading>
+      <div className="flex items-center justify-between">
+        <SectionHeading>Cash &amp; Bank</SectionHeading>
+        <button
+          onClick={() => setBalancesVisible((v) => !v)}
+          aria-label={balancesVisible ? 'Hide balances' : 'Show balances'}
+          title={balancesVisible ? 'Hide balances' : 'Show balances'}
+          className="text-gray-400 hover:text-gray-700 p-1 -m-1"
+        >
+          {balancesVisible ? <Eye size={16} /> : <EyeOff size={16} />}
+        </button>
+      </div>
       <div className="grid grid-cols-2 gap-4">
-        <CashBankCard title="Cash in Hand" icon={Wallet} total={cashTotal} accounts={cashAccounts} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
-        <CashBankCard title="Bank Balance" icon={Landmark} total={bankTotal} accounts={bankAccounts} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
+        <CashBankCard title="Cash in Hand" icon={Wallet} total={cashTotal} accounts={cashAccounts} visible={balancesVisible} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
+        <CashBankCard title="Bank Balance" icon={Landmark} total={bankTotal} accounts={bankAccounts} visible={balancesVisible} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
       </div>
 
       {/* Row 2 — Sale */}
@@ -2090,6 +2108,9 @@ function MobileHomeScreen({ onNavigate, visiblePages }) {
   const [receivables, setReceivables] = useState({ total_receivables: 0, overdue_receivables: 0 });
   const [payables, setPayables] = useState([]);
   const [addSheetOpen, setAddSheetOpen] = useState(false);
+  // Hidden by default every time the dashboard opens — a pure client-side
+  // toggle (no refetch), never persisted, so a fresh open always re-masks.
+  const [balancesVisible, setBalancesVisible] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -2121,11 +2142,21 @@ function MobileHomeScreen({ onNavigate, visiblePages }) {
   return (
     <div className="space-y-5 pb-4">
       <div className="rounded-3xl p-6" style={{ background: 'radial-gradient(circle at 30% 0%, #1A1F16 0%, #0B0C0A 70%)' }}>
-        <div className="text-xs uppercase tracking-wide" style={{ color: '#9AA39A' }}>Total Balance</div>
-        <div className="text-3xl font-bold text-white mt-1">{formatPkr(cashTotal + bankTotal)}</div>
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wide" style={{ color: '#9AA39A' }}>Total Balance</div>
+          <button
+            onClick={() => setBalancesVisible((v) => !v)}
+            aria-label={balancesVisible ? 'Hide balances' : 'Show balances'}
+            title={balancesVisible ? 'Hide balances' : 'Show balances'}
+            className="text-white/70 hover:text-white p-1 -m-1"
+          >
+            {balancesVisible ? <Eye size={16} /> : <EyeOff size={16} />}
+          </button>
+        </div>
+        <div className="text-3xl font-bold text-white mt-1">{maskPkr(cashTotal + bankTotal, balancesVisible)}</div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs" style={{ color: '#9AA39A' }}>
-          <span>Cash in Hand <span className="text-white font-medium">{formatPkr(cashTotal)}</span></span>
-          <span>Bank Balance <span className="text-white font-medium">{formatPkr(bankTotal)}</span></span>
+          <span>Cash in Hand <span className="text-white font-medium">{maskPkr(cashTotal, balancesVisible)}</span></span>
+          <span>Bank Balance <span className="text-white font-medium">{maskPkr(bankTotal, balancesVisible)}</span></span>
         </div>
         <div className="flex items-center justify-between mt-6 gap-3">
           <button
