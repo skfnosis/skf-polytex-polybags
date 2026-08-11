@@ -229,13 +229,14 @@ async function fetchDefaultPolybagItem() {
   return exact ? { id: exact.id, name: exact.name } : null;
 }
 
-async function createItem({ name, category, defaultUnit, fabricGroup, composition }) {
+async function createItem({ name, category, defaultUnit, fabricGroup, composition, itemType }) {
   const { data, error } = await supabase.rpc('create_item', {
     p_name: name,
     p_category: category,
     p_default_unit: defaultUnit,
     p_fabric_group: fabricGroup || null,
     p_composition: composition || null,
+    p_item_type: itemType || 'product',
   });
   if (error) throw error;
   return data;
@@ -277,7 +278,7 @@ async function fetchStockBalance() {
 async function fetchInvoiceWithItems(invoiceId) {
   const [{ data: invoice, error }, { data: items, error: itemsError }] = await Promise.all([
     supabase.from('invoices').select('*, parties(name)').eq('id', invoiceId).single(),
-    supabase.from('invoice_items').select('*, items(name)').eq('invoice_id', invoiceId),
+    supabase.from('invoice_items').select('*, items(name, item_type)').eq('invoice_id', invoiceId),
   ]);
   if (error) throw error;
   if (itemsError) throw itemsError;
@@ -399,6 +400,7 @@ async function createInvoice({
       rate: Number(i.rate) || 0,
       description: i.description || '',
       narration: i.narration || '',
+      item_type: i.itemType || 'product',
     })),
     p_supplier_invoice_no: supplierInvoiceNo || null,
     p_linked_order_id: linkedOrderId || null,
@@ -918,7 +920,12 @@ function ItemPicker({ category, value, onChange, resetKey, inputRef, onEnterNext
               onMouseEnter={() => setHighlight(i)}
               onClick={() => pick(it)}
             >
-              <div className="font-medium">{it.name}</div>
+              <div className="font-medium flex items-center gap-1.5">
+                {it.name}
+                {it.item_type === 'service' && (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: THEME.blue + '1a', color: THEME.blue }}>SERVICE</span>
+                )}
+              </div>
               <div className="text-xs text-gray-500">
                 {it.default_unit}{it.last_purchase_rate ? ` · last rate ${formatPkr(it.last_purchase_rate)}` : ''}
               </div>
@@ -957,12 +964,14 @@ function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
   const [unit, setUnit] = useState(purchaseUnitOptionsFor(category)[0]);
   const [fabricGroup, setFabricGroup] = useState(FABRIC_GROUPS[0].key);
   const [composition, setComposition] = useState('');
+  const [itemType, setItemType] = useState('product');
   const [saving, setSaving] = useState(false);
   const { show, ToastHost } = useToast();
   const isFabric = category === 'fabric';
 
   useEffect(() => { setName(prefillName || ''); }, [prefillName, open]);
   useEffect(() => { setUnit(purchaseUnitOptionsFor(category)[0]); }, [category, open]);
+  useEffect(() => { setItemType('product'); }, [open]);
 
   async function submit() {
     if (!name.trim()) return;
@@ -972,8 +981,9 @@ function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
         name: name.trim(), category, defaultUnit: unit,
         fabricGroup: isFabric ? fabricGroup : null,
         composition: isFabric ? composition : null,
+        itemType,
       });
-      onCreated({ id, name: name.trim(), category, default_unit: unit, fabric_group: isFabric ? fabricGroup : null, composition: isFabric ? composition : null });
+      onCreated({ id, name: name.trim(), category, default_unit: unit, fabric_group: isFabric ? fabricGroup : null, composition: isFabric ? composition : null, item_type: itemType });
     } catch (e) {
       show(`Could not add item: ${e.message}`, 'danger');
     } finally {
@@ -984,6 +994,22 @@ function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
   return (
     <Modal open={open} onClose={onClose} title={isFabric ? 'New fabric' : 'New item / quality'}>
       <div className="space-y-3">
+        <div>
+          <div className="text-sm font-medium mb-1.5" style={{ color: THEME.ink }}>Type</div>
+          <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+            {[{ key: 'product', label: 'Product' }, { key: 'service', label: 'Service' }].map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setItemType(t.key)}
+                className="px-3 py-1.5 rounded-md text-sm font-medium"
+                style={itemType === t.key ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
         {isFabric && (
           <div>
             <div className="text-sm font-medium mb-1.5" style={{ color: THEME.ink }}>Group</div>
@@ -2442,7 +2468,7 @@ function PurchaseModule({ initialTab }) {
 function emptyPurchaseLine(defaultItem) {
   return {
     itemId: defaultItem?.id || null, itemName: defaultItem?.name || '',
-    unit: 'KG', quantity: '', rate: '', narration: '',
+    unit: 'KG', quantity: '', rate: '', narration: '', itemType: defaultItem?.item_type || 'product',
   };
 }
 
@@ -2546,6 +2572,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
     updateLine(i, {
       itemId: item.id,
       itemName: item.name,
+      itemType: item.item_type || 'product',
       unit: item.default_unit || purchaseUnitOptionsFor(brand?.category)[0],
       rate: item.last_purchase_rate != null && !lines[i].rate ? String(item.last_purchase_rate) : lines[i].rate,
     });
@@ -2562,6 +2589,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
       setLinkedOrder(order);
       setLines(items.map((it) => ({
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
+        itemType: it.items?.item_type || 'product',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
         narration: it.narration || '',
       })));
@@ -2595,7 +2623,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose }) {
       const id = await createInvoice({
         invoiceType, brandKey: brand.brand_key, category: brand.category,
         partyId: vendor.id, invoiceDate: date,
-        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration })),
+        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType })),
         supplierInvoiceNo: isBill ? supplierInvoiceNo : undefined,
         linkedOrderId: isBill ? linkedOrder?.id : undefined,
         transport: isBill ? transport : undefined,
@@ -3267,7 +3295,7 @@ function SalesModule({ initialTab }) {
 function emptySaleLine(defaultItem) {
   return {
     itemId: defaultItem?.id || null, itemName: defaultItem?.name || '',
-    unit: 'KG', quantity: '', rate: '', narration: '',
+    unit: 'KG', quantity: '', rate: '', narration: '', itemType: defaultItem?.item_type || 'product',
   };
 }
 
@@ -3384,6 +3412,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
     updateLine(i, {
       itemId: item.id,
       itemName: item.name,
+      itemType: item.item_type || 'product',
       unit: item.default_unit || purchaseUnitOptionsFor(brand?.category)[0],
       rate: item.last_sale_rate != null && !lines[i].rate ? String(item.last_sale_rate) : lines[i].rate,
     });
@@ -3400,6 +3429,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
       setLinkedOrder(order);
       setLines(items.map((it) => ({
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
+        itemType: it.items?.item_type || 'product',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
         narration: it.narration || '',
       })));
@@ -3433,7 +3463,7 @@ function SaleEntryForm({ invoiceType, onSavedClose }) {
       const id = await createInvoice({
         invoiceType, brandKey: brand.brand_key, category: brand.category,
         partyId: customer.id, invoiceDate: date,
-        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration })),
+        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType })),
         customerPoNo: isBill ? customerPoNo : undefined,
         linkedOrderId: isBill ? linkedOrder?.id : undefined,
         transport: isBill ? transport : undefined,
