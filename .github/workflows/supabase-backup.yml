@@ -20,12 +20,27 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch: {}
 
+permissions:
+  contents: write  # needed to push the daily dump to the backups branch
+
 jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      - name: Install postgresql-client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Ubuntu's default apt repo only carries pg_dump 16.x, but the
+      # Supabase project runs Postgres 17 — pg_dump refuses to dump from a
+      # newer major server version than itself. Add the official PGDG apt
+      # repo (via the helper script bundled in postgresql-common) so we get
+      # a pg_dump that actually matches.
+      - name: Install matching postgresql-client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
 
       - name: Dump database
         env:
