@@ -1,0 +1,45 @@
+name: Supabase Keep-Alive
+
+# Supabase's free tier auto-pauses a project after 7 days with no activity.
+# This writes to the public.heartbeat row (see migrations/20260802000000_
+# init_schema.sql) every 3 days, well inside that window, so the project
+# never gets paused from simple inactivity.
+#
+# Uses the anon/publishable key only — the same key already shipped in the
+# deployed frontend bundle, not a secret. heartbeat's RLS UPDATE policy
+# ("heartbeat writable by service" using (true)) intentionally allows this
+# without authentication.
+#
+# `0 0 */3 * *` is a day-of-month-mod-3 approximation of "every 3 days" —
+# GitHub Actions cron has no native "every N days" step, and this can drift
+# to a ~1 day gap across a month boundary at worst, still comfortably inside
+# the 7-day pause window.
+
+on:
+  schedule:
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase heartbeat table
+        run: |
+          set -euo pipefail
+          SUPABASE_URL="https://awkofjnfwxrzzkkxygem.supabase.co"
+          ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3a29mam5md3hyenpra3h5Z2VtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU2ODk4NjMsImV4cCI6MjEwMTI2NTg2M30.Jkw6VCLk2RN8xB-opUEyVoEOHhpaYgPs_JfTCzQMHbc"
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          http_code=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" \
+            -X PATCH "${SUPABASE_URL}/rest/v1/heartbeat?id=eq.1" \
+            -H "apikey: ${ANON_KEY}" \
+            -H "Authorization: Bearer ${ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"pinged_at\": \"${NOW}\"}")
+          echo "HTTP ${http_code}"
+          cat /tmp/resp.txt || true
+          if [ "$http_code" -ge 300 ]; then
+            echo "Heartbeat ping failed" >&2
+            exit 1
+          fi

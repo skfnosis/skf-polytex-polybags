@@ -1,0 +1,71 @@
+name: Supabase Daily Backup
+
+# Free-tier Supabase projects don't get automatic backups (that's a paid-plan
+# feature), so this does it instead: a full pg_dump (schema + data) every
+# day, committed as a plain-SQL file to the `backups` branch — kept separate
+# from history on this branch so daily dumps don't bloat it, and browsable/
+# diffable in git rather than expiring like a workflow artifact would.
+#
+# Requires a repo secret this workflow cannot set up on its own:
+#   SUPABASE_DB_URL — the full Postgres connection string, e.g.
+#     postgresql://postgres:[DB-PASSWORD]@db.awkofjnfwxrzzkkxygem.supabase.co:5432/postgres
+#   Get it from: Supabase Dashboard -> Project Settings -> Database ->
+#   Connection string (URI tab). Add it under this repo's
+#   Settings -> Secrets and variables -> Actions -> New repository secret.
+# Until that secret is added, every run of this workflow will fail at the
+# pg_dump step — that's expected, not a bug in the workflow.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install postgresql-client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Dump database
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_DB_URL:-}" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not set — see workflow file header for setup steps."
+            exit 1
+          fi
+          mkdir -p /tmp/backup
+          pg_dump "$SUPABASE_DB_URL" \
+            --no-owner --no-privileges --schema=public \
+            --file=/tmp/backup/dump.sql
+
+      - name: Commit dump to backups branch
+        run: |
+          set -euo pipefail
+          DATE="$(date -u +%Y-%m-%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin backups 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/backups; then
+            git checkout backups
+          else
+            git checkout --orphan backups
+            git rm -rf . > /dev/null 2>&1 || true
+          fi
+
+          mkdir -p backups
+          cp /tmp/backup/dump.sql "backups/${DATE}.sql"
+          # Keep the last 30 daily dumps on this branch; older ones still
+          # exist in git history if ever needed via `git log`.
+          ls -1 backups/*.sql | sort | head -n -30 | xargs -r rm --
+
+          git add backups
+          if git diff --cached --quiet; then
+            echo "No changes to commit (dump identical to yesterday's or already run today)."
+          else
+            git commit -m "Backup ${DATE}"
+            git push origin backups
+          fi
