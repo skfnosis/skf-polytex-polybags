@@ -3392,12 +3392,15 @@ function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`${title} — Report`} width={640}>
+    <Modal open={open} onClose={onClose} title={`${title} — Report`} width={880}>
       {loading ? (
         <div className="py-16 flex justify-center"><Spinner /></div>
       ) : previewUrl ? (
-        <div className="space-y-3">
-          <iframe title="report-preview" src={previewUrl} className="w-full rounded-lg border" style={{ height: 420, borderColor: THEME.line }} />
+        <div className="space-y-3 max-h-[82vh] overflow-y-auto">
+          {/* A4 aspect ratio (210x297mm) so the full page — every column —
+              renders on screen at a legible size, not a cramped fixed-height
+              slot the browser's PDF viewer has to squeeze the page into. */}
+          <iframe title="report-preview" src={previewUrl} className="w-full rounded-lg border" style={{ aspectRatio: '210 / 297', borderColor: THEME.line }} />
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" icon={FileDown} onClick={() => printPdfDoc(docRef)}>Print</Button>
             <Button variant="outline" icon={FileDown} loading={savingImage} onClick={handleSaveImage}>Save Image</Button>
