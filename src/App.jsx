@@ -3,7 +3,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
-  BookOpen, Home, Package, Eye, EyeOff,
+  BookOpen, Home, Package, Eye, EyeOff, Pencil,
 } from 'lucide-react';
 import { supabase } from './supabaseClient.js';
 import logoSkfPolytex from './assets/logo-skf-polytex.png';
@@ -443,6 +443,34 @@ async function createInvoice({
   });
   if (error) throw error;
   return data;
+}
+
+async function updateInvoice(invoiceId, {
+  partyId, invoiceDate, items,
+  supplierInvoiceNo, linkedOrderId, transport, loading, discount, tax, customerPoNo,
+}) {
+  const { error } = await supabase.rpc('update_invoice', {
+    p_invoice_id: invoiceId,
+    p_party_id: partyId,
+    p_invoice_date: invoiceDate,
+    p_items: items.map((i) => ({
+      item_id: i.itemId || null,
+      quantity: Number(i.quantity) || 0,
+      unit: i.unit,
+      rate: Number(i.rate) || 0,
+      description: i.description || '',
+      narration: i.narration || '',
+      item_type: i.itemType || 'product',
+    })),
+    p_supplier_invoice_no: supplierInvoiceNo || null,
+    p_linked_order_id: linkedOrderId || null,
+    p_transport: Number(transport) || 0,
+    p_loading: Number(loading) || 0,
+    p_discount: Number(discount) || 0,
+    p_tax: Number(tax) || 0,
+    p_customer_po_no: customerPoNo || null,
+  });
+  if (error) throw error;
 }
 
 async function voidInvoice(invoiceId, reason) {
@@ -2652,11 +2680,11 @@ function MobileTabBar({ current, onNavigate, visiblePages }) {
 // vendor; F3 (while an item field is focused) adds a new item. Ctrl+S saves,
 // Ctrl+P prints the current draft.
 //
-// "Old" mode never offers Edit/Delete on a posted document — the backend
-// design (see migration notes) never mutates or deletes a posted invoice,
-// only voids it with a reversing ledger/stock entry. Void replaces those
-// two actions here, gated by the same 'approve' permission the rest of the
-// app already uses for voiding.
+// "Old" mode offers Edit (approvers only) alongside Void. Neither one
+// mutates the ledger/stock trail directly — Edit reverses the previous
+// posting with a compensating entry and reposts the edited version, the
+// same pattern void_invoice already used for voiding (see update_invoice
+// migration notes).
 // ============================================================================
 
 const PURCHASE_TABS = [
@@ -2675,6 +2703,10 @@ function PurchaseModule({ initialTab, initialMode }) {
   // Opening the page normally lands on the entries list ('old'); only a
   // quick-add shortcut passes initialMode='new' to jump straight to entry.
   const [mode, setMode] = useState(initialMode || 'old');
+  // Editing an old document is orthogonal to the New/Old toggle above — it's
+  // entered via the Old list's Edit button and always returns to the Old
+  // list on close, regardless of whatever the toggle was last set to.
+  const [editingInvoice, setEditingInvoice] = useState(null);
   // PurchaseEntryForm reports its own dirty state up so these tab/mode
   // buttons — which remount/discard it via `key={tab}` — can warn before
   // silently wiping an in-progress bill, the same protection the unsaved-
@@ -2682,11 +2714,12 @@ function PurchaseModule({ initialTab, initialMode }) {
   const [entryDirty, setEntryDirty] = useState(false);
 
   function guardedSwitch(fn) {
-    if (mode === 'new' && entryDirty
+    if ((mode === 'new' || editingInvoice) && entryDirty
         && !window.confirm('You have unsaved changes on this form. Switching will discard them. Continue?')) {
       return;
     }
     setEntryDirty(false);
+    setEditingInvoice(null);
     fn();
   }
 
@@ -2702,7 +2735,7 @@ function PurchaseModule({ initialTab, initialMode }) {
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
           value={mode}
-          onChange={(k) => { if (k !== mode) guardedSwitch(() => setMode(k)); }}
+          onChange={(k) => { if (k !== mode || editingInvoice) guardedSwitch(() => setMode(k)); }}
         />
       </div>
 
@@ -2724,9 +2757,9 @@ function PurchaseModule({ initialTab, initialMode }) {
           {[{ k: 'new', l: 'New' }, { k: 'old', l: 'Old' }].map((o) => (
             <button
               key={o.k}
-              onClick={() => { if (o.k !== mode) guardedSwitch(() => setMode(o.k)); }}
+              onClick={() => { if (o.k !== mode || editingInvoice) guardedSwitch(() => setMode(o.k)); }}
               className="px-3 py-1.5 rounded-md text-sm font-medium"
-              style={mode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+              style={mode === o.k && !editingInvoice ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
             >
               {o.l}
             </button>
@@ -2734,9 +2767,16 @@ function PurchaseModule({ initialTab, initialMode }) {
         </div>
       </div>
 
-      {mode === 'new'
-        ? <PurchaseEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} onDirtyChange={setEntryDirty} />
-        : <PurchaseOldList key={tab} invoiceType={tab} />}
+      {editingInvoice
+        ? (
+          <PurchaseEntryForm
+            key={`edit-${editingInvoice.id}`} invoiceType={tab} editInvoiceId={editingInvoice.id}
+            onSavedClose={() => { setEditingInvoice(null); setMode('old'); }} onDirtyChange={setEntryDirty}
+          />
+        )
+        : mode === 'new'
+          ? <PurchaseEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} onDirtyChange={setEntryDirty} />
+          : <PurchaseOldList key={tab} invoiceType={tab} onEdit={(row) => setEditingInvoice(row)} />}
     </div>
   );
 }
@@ -2748,7 +2788,7 @@ function emptyPurchaseLine(defaultItem) {
   };
 }
 
-function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
+function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange }) {
   const isBill = invoiceType === 'purchase';
   const title = purchaseDocLabel(invoiceType);
 
@@ -2762,6 +2802,8 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [loadingEdit, setLoadingEdit] = useState(!!editInvoiceId);
+  const [editInvoiceNo, setEditInvoiceNo] = useState(null);
   const { show, ToastHost } = useToast();
 
   const [supplierInvoiceNo, setSupplierInvoiceNo] = useState('');
@@ -2791,7 +2833,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
-  const draftKey = `skf_draft_purchase_${invoiceType}`;
+  const draftKey = editInvoiceId ? `skf_draft_purchase_edit_${editInvoiceId}` : `skf_draft_purchase_${invoiceType}`;
   const draftSnapshot = { brandKey: brand?.brand_key, vendor: vendor ? { id: vendor.id, name: vendor.name } : null, date, supplierInvoiceNo, lines };
   const { restorable: draftRestorable, clearDraft, dismissRestore } = useDraftAutosave(draftKey, draftSnapshot, isDirty);
 
@@ -2816,6 +2858,51 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { dateRef.current?.focus(); }, []);
+
+  // Editing an old document: fetch it (once brands are loaded, so its
+  // brand_key resolves to a real brand object) and populate the form from
+  // it instead of starting blank.
+  useEffect(() => {
+    if (!editInvoiceId || !brands.length) return;
+    let alive = true;
+    (async () => {
+      try {
+        const { invoice, items } = await fetchInvoiceWithItems(editInvoiceId);
+        if (!alive) return;
+        const b = brands.find((x) => x.brand_key === invoice.brand_key);
+        if (b) setBrand(b);
+        setVendor({ id: invoice.party_id, name: invoice.parties?.name || '' });
+        setVendorResetKey((k) => k + 1);
+        setDate(toDateInput(invoice.invoice_date));
+        setSupplierInvoiceNo(invoice.supplier_invoice_no || '');
+        setTransport(String(invoice.transport_charges || 0));
+        setLoadingCharge(String(invoice.loading_charges || 0));
+        setDiscount(String(invoice.discount_amount || 0));
+        setTax(String(invoice.tax_amount || 0));
+        setLines(items.map((it) => ({
+          itemId: it.item_id, itemName: it.items?.name || it.description || '',
+          itemType: it.items?.item_type || 'product',
+          unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
+          narration: it.narration || '',
+        })));
+        setEditInvoiceNo(invoice.invoice_no);
+        lineRefs.current = {};
+        if (invoice.linked_order_id) {
+          try {
+            const { invoice: order } = await fetchInvoiceWithItems(invoice.linked_order_id);
+            if (alive) setLinkedOrder(order);
+          } catch {
+            // best-effort — only affects the "loaded from PO" display, not saving
+          }
+        }
+      } catch (e) {
+        show(`Could not load document to edit: ${e.message}`, 'danger');
+      } finally {
+        if (alive) setLoadingEdit(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [editInvoiceId, brands]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!isBill || !vendor) { setPoOptions([]); return; }
@@ -2924,10 +3011,28 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
+      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType }));
+      if (editInvoiceId) {
+        await updateInvoice(editInvoiceId, {
+          partyId: vendor.id, invoiceDate: date, items: itemsPayload,
+          supplierInvoiceNo: isBill ? supplierInvoiceNo : undefined,
+          linkedOrderId: isBill ? linkedOrder?.id : undefined,
+          transport: isBill ? transport : undefined,
+          loading: isBill ? loadingCharge : undefined,
+          discount: isBill ? discount : undefined,
+          tax: isBill ? tax : undefined,
+        });
+        show(`Saved. ${editInvoiceNo} updated.`);
+        clearDraft();
+        // An edit is a single, focused operation on one document — always
+        // return to the list afterward rather than clearing for another entry.
+        onSavedClose?.();
+        return;
+      }
       const id = await createInvoice({
         invoiceType, brandKey: brand.brand_key, category: brand.category,
         partyId: vendor.id, invoiceDate: date,
-        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType })),
+        items: itemsPayload,
         supplierInvoiceNo: isBill ? supplierInvoiceNo : undefined,
         linkedOrderId: isBill ? linkedOrder?.id : undefined,
         transport: isBill ? transport : undefined,
@@ -2980,6 +3085,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  if (editInvoiceId && loadingEdit) return <div className="py-20 flex justify-center"><Spinner /></div>;
   if (!brand) return <div className="py-20 flex justify-center"><Spinner /></div>;
 
   const units = purchaseUnitOptionsFor(brand.category);
@@ -3045,10 +3151,12 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
 
   return (
     <div className="max-w-5xl">
-      <h2 className="font-display font-semibold text-lg mb-4">{title}</h2>
+      <h2 className="font-display font-semibold text-lg mb-4">
+        {editInvoiceId ? `Edit ${title} — ${editInvoiceNo || ''}` : title}
+      </h2>
 
       <div className="flex flex-wrap items-end gap-4 mb-5">
-        <BrandTabs brands={brands} value={brand} onChange={switchBrand} />
+        <BrandTabs brands={brands} value={brand} onChange={editInvoiceId ? () => {} : switchBrand} />
         <Input
           ref={dateRef} type="date" label="Date" value={date}
           onChange={(e) => setDate(e.target.value)}
@@ -3157,8 +3265,14 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => save(false)} loading={saving}>Save</Button>
-        <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
+        {editInvoiceId ? (
+          <Button onClick={() => save(true)} loading={saving}>Save Changes</Button>
+        ) : (
+          <>
+            <Button onClick={() => save(false)} loading={saving}>Save</Button>
+            <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
+          </>
+        )}
         <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
         <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
         <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
@@ -3169,7 +3283,7 @@ function PurchaseEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
       </p>
       <DocReportModal
         open={showReport} onClose={() => setShowReport(false)}
-        title={title} buildDoc={() => buildDraft()} buildPdf={buildPurchaseDocPdf}
+        title={editInvoiceId ? `Edit ${title}` : title} buildDoc={() => buildDraft()} buildPdf={buildPurchaseDocPdf}
       />
       <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
       <RestoreDraftModal open={!!draftRestorable} savedAt={draftRestorable?.savedAt} onRestore={restoreDraft} onDiscard={dismissRestore} />
@@ -3498,7 +3612,7 @@ function PurchaseViewModal({ doc, onClose }) {
   );
 }
 
-function PurchaseOldList({ invoiceType }) {
+function PurchaseOldList({ invoiceType, onEdit }) {
   const { permissions } = useAuth();
   const canApprove = !!permissions.entry_purchase?.can_approve;
 
@@ -3612,6 +3726,11 @@ function PurchaseOldList({ invoiceType }) {
                 <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
+                {canApprove && row.status === 'posted' && (
+                  <button onClick={() => onEdit?.(row)} title="Edit" aria-label="Edit" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
+                    <Pencil size={16} />
+                  </button>
+                )}
                 <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
@@ -3666,6 +3785,10 @@ function SalesModule({ initialTab, initialMode }) {
   // Opening the page normally lands on the entries list ('old'); only a
   // quick-add shortcut passes initialMode='new' to jump straight to entry.
   const [mode, setMode] = useState(initialMode || 'old');
+  // Editing an old document is orthogonal to the New/Old toggle above — it's
+  // entered via the Old list's Edit button and always returns to the Old
+  // list on close, regardless of whatever the toggle was last set to.
+  const [editingInvoice, setEditingInvoice] = useState(null);
   // SaleEntryForm reports its own dirty state up so these tab/mode buttons
   // — which remount/discard it via `key={tab}` — can warn before silently
   // wiping an in-progress bill, the same protection the unsaved-changes
@@ -3673,11 +3796,12 @@ function SalesModule({ initialTab, initialMode }) {
   const [entryDirty, setEntryDirty] = useState(false);
 
   function guardedSwitch(fn) {
-    if (mode === 'new' && entryDirty
+    if ((mode === 'new' || editingInvoice) && entryDirty
         && !window.confirm('You have unsaved changes on this form. Switching will discard them. Continue?')) {
       return;
     }
     setEntryDirty(false);
+    setEditingInvoice(null);
     fn();
   }
 
@@ -3693,7 +3817,7 @@ function SalesModule({ initialTab, initialMode }) {
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
           value={mode}
-          onChange={(k) => { if (k !== mode) guardedSwitch(() => setMode(k)); }}
+          onChange={(k) => { if (k !== mode || editingInvoice) guardedSwitch(() => setMode(k)); }}
         />
       </div>
 
@@ -3715,9 +3839,9 @@ function SalesModule({ initialTab, initialMode }) {
           {[{ k: 'new', l: 'New' }, { k: 'old', l: 'Old' }].map((o) => (
             <button
               key={o.k}
-              onClick={() => { if (o.k !== mode) guardedSwitch(() => setMode(o.k)); }}
+              onClick={() => { if (o.k !== mode || editingInvoice) guardedSwitch(() => setMode(o.k)); }}
               className="px-3 py-1.5 rounded-md text-sm font-medium"
-              style={mode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+              style={mode === o.k && !editingInvoice ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
             >
               {o.l}
             </button>
@@ -3725,9 +3849,16 @@ function SalesModule({ initialTab, initialMode }) {
         </div>
       </div>
 
-      {mode === 'new'
-        ? <SaleEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} onDirtyChange={setEntryDirty} />
-        : <SaleOldList key={tab} invoiceType={tab} />}
+      {editingInvoice
+        ? (
+          <SaleEntryForm
+            key={`edit-${editingInvoice.id}`} invoiceType={tab} editInvoiceId={editingInvoice.id}
+            onSavedClose={() => { setEditingInvoice(null); setMode('old'); }} onDirtyChange={setEntryDirty}
+          />
+        )
+        : mode === 'new'
+          ? <SaleEntryForm key={tab} invoiceType={tab} onSavedClose={() => setMode('old')} onDirtyChange={setEntryDirty} />
+          : <SaleOldList key={tab} invoiceType={tab} onEdit={(row) => setEditingInvoice(row)} />}
     </div>
   );
 }
@@ -3739,7 +3870,7 @@ function emptySaleLine(defaultItem) {
   };
 }
 
-function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
+function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange }) {
   const isBill = invoiceType === 'sale';
   const title = saleDocLabel(invoiceType);
 
@@ -3753,6 +3884,8 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [loadingEdit, setLoadingEdit] = useState(!!editInvoiceId);
+  const [editInvoiceNo, setEditInvoiceNo] = useState(null);
   const { show, ToastHost } = useToast();
 
   const [customerPoNo, setCustomerPoNo] = useState('');
@@ -3783,7 +3916,7 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
-  const draftKey = `skf_draft_sale_${invoiceType}`;
+  const draftKey = editInvoiceId ? `skf_draft_sale_edit_${editInvoiceId}` : `skf_draft_sale_${invoiceType}`;
   const draftSnapshot = { brandKey: brand?.brand_key, customer: customer ? { id: customer.id, name: customer.name } : null, date, customerPoNo, lines };
   const { restorable: draftRestorable, clearDraft, dismissRestore } = useDraftAutosave(draftKey, draftSnapshot, isDirty);
 
@@ -3808,6 +3941,51 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { dateRef.current?.focus(); }, []);
+
+  // Editing an old document: fetch it (once brands are loaded, so its
+  // brand_key resolves to a real brand object) and populate the form from
+  // it instead of starting blank.
+  useEffect(() => {
+    if (!editInvoiceId || !brands.length) return;
+    let alive = true;
+    (async () => {
+      try {
+        const { invoice, items } = await fetchInvoiceWithItems(editInvoiceId);
+        if (!alive) return;
+        const b = brands.find((x) => x.brand_key === invoice.brand_key);
+        if (b) setBrand(b);
+        setCustomer({ id: invoice.party_id, name: invoice.parties?.name || '' });
+        setCustomerResetKey((k) => k + 1);
+        setDate(toDateInput(invoice.invoice_date));
+        setCustomerPoNo(invoice.customer_po_no || '');
+        setTransport(String(invoice.transport_charges || 0));
+        setLoadingCharge(String(invoice.loading_charges || 0));
+        setDiscount(String(invoice.discount_amount || 0));
+        setTax(String(invoice.tax_amount || 0));
+        setLines(items.map((it) => ({
+          itemId: it.item_id, itemName: it.items?.name || it.description || '',
+          itemType: it.items?.item_type || 'product',
+          unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
+          narration: it.narration || '',
+        })));
+        setEditInvoiceNo(invoice.invoice_no);
+        lineRefs.current = {};
+        if (invoice.linked_order_id) {
+          try {
+            const { invoice: order } = await fetchInvoiceWithItems(invoice.linked_order_id);
+            if (alive) setLinkedOrder(order);
+          } catch {
+            // best-effort — only affects the "loaded from SO" display, not saving
+          }
+        }
+      } catch (e) {
+        show(`Could not load document to edit: ${e.message}`, 'danger');
+      } finally {
+        if (alive) setLoadingEdit(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [editInvoiceId, brands]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!isBill) return;
@@ -3928,10 +4106,33 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
+      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType }));
+      if (editInvoiceId) {
+        await updateInvoice(editInvoiceId, {
+          partyId: customer.id, invoiceDate: date, items: itemsPayload,
+          customerPoNo: isBill ? customerPoNo : undefined,
+          linkedOrderId: isBill ? linkedOrder?.id : undefined,
+          transport: isBill ? transport : undefined,
+          loading: isBill ? loadingCharge : undefined,
+          discount: isBill ? discount : undefined,
+          tax: isBill ? tax : undefined,
+        });
+        show(`Saved. ${editInvoiceNo} updated.`);
+        clearDraft();
+        if (isBill) fetchStockBalance().then((rows) => {
+          const map = {};
+          rows.forEach((r) => { map[r.item_id] = r; });
+          setStockMap(map);
+        });
+        // An edit is a single, focused operation on one document — always
+        // return to the list afterward rather than clearing for another entry.
+        onSavedClose?.();
+        return;
+      }
       const id = await createInvoice({
         invoiceType, brandKey: brand.brand_key, category: brand.category,
         partyId: customer.id, invoiceDate: date,
-        items: validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType })),
+        items: itemsPayload,
         customerPoNo: isBill ? customerPoNo : undefined,
         linkedOrderId: isBill ? linkedOrder?.id : undefined,
         transport: isBill ? transport : undefined,
@@ -3989,6 +4190,7 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  if (editInvoiceId && loadingEdit) return <div className="py-20 flex justify-center"><Spinner /></div>;
   if (!brand) return <div className="py-20 flex justify-center"><Spinner /></div>;
 
   const units = purchaseUnitOptionsFor(brand.category);
@@ -4064,10 +4266,12 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
 
   return (
     <div className="max-w-5xl">
-      <h2 className="font-display font-semibold text-lg mb-4">{title}</h2>
+      <h2 className="font-display font-semibold text-lg mb-4">
+        {editInvoiceId ? `Edit ${title} — ${editInvoiceNo || ''}` : title}
+      </h2>
 
       <div className="flex flex-wrap items-end gap-4 mb-5">
-        <BrandTabs brands={brands} value={brand} onChange={switchBrand} />
+        <BrandTabs brands={brands} value={brand} onChange={editInvoiceId ? () => {} : switchBrand} />
         <Input
           ref={dateRef} type="date" label="Date" value={date}
           onChange={(e) => setDate(e.target.value)}
@@ -4176,8 +4380,14 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => save(false)} loading={saving}>Save</Button>
-        <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
+        {editInvoiceId ? (
+          <Button onClick={() => save(true)} loading={saving}>Save Changes</Button>
+        ) : (
+          <>
+            <Button onClick={() => save(false)} loading={saving}>Save</Button>
+            <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
+          </>
+        )}
         <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
         <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
         <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
@@ -4188,7 +4398,7 @@ function SaleEntryForm({ invoiceType, onSavedClose, onDirtyChange }) {
       </p>
       <DocReportModal
         open={showReport} onClose={() => setShowReport(false)}
-        title={title} buildDoc={() => buildDraft()} buildPdf={buildSaleDocPdf}
+        title={editInvoiceId ? `Edit ${title}` : title} buildDoc={() => buildDraft()} buildPdf={buildSaleDocPdf}
       />
       <UnsavedChangesModal open={showUnsavedConfirm} onStay={stayOnPage} onLeave={leavePage} />
       <RestoreDraftModal open={!!draftRestorable} savedAt={draftRestorable?.savedAt} onRestore={restoreDraft} onDiscard={dismissRestore} />
@@ -4257,7 +4467,7 @@ function SaleViewModal({ doc, onClose }) {
   );
 }
 
-function SaleOldList({ invoiceType }) {
+function SaleOldList({ invoiceType, onEdit }) {
   const { permissions } = useAuth();
   const canApprove = !!permissions.entry_sale?.can_approve;
 
@@ -4371,6 +4581,11 @@ function SaleOldList({ invoiceType }) {
                 <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
+                {canApprove && row.status === 'posted' && (
+                  <button onClick={() => onEdit?.(row)} title="Edit" aria-label="Edit" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
+                    <Pencil size={16} />
+                  </button>
+                )}
                 <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileDown size={16} />
                 </button>
