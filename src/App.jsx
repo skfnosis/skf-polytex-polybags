@@ -1699,6 +1699,10 @@ function AppShell() {
   const { profile, visiblePages, signOut, authError } = useAuth();
   const [current, setCurrent] = useState(null);
   const [pageParam, setPageParam] = useState(null);
+  // Distinguishes "opened the page normally" (land on the entries list, mode
+  // stays null -> module defaults to 'old') from "tapped a quick-add
+  // shortcut" (mode 'new' -> module jumps straight into the entry form).
+  const [pageMode, setPageMode] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -1706,9 +1710,10 @@ function AppShell() {
     if (current && !visiblePages.includes(current) && visiblePages.length > 0) setCurrent(visiblePages[0]);
   }, [visiblePages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function go(pageKey, param = null) {
+  function go(pageKey, param = null, mode = null) {
     setCurrent(pageKey);
     setPageParam(param);
+    setPageMode(mode);
     setMobileNavOpen(false);
   }
 
@@ -1744,11 +1749,11 @@ function AppShell() {
       <main className="flex-1 p-4 md:p-6 overflow-auto pb-24 md:pb-6">
         {current === 'dashboard' ? (
           <>
-            <div className="hidden md:block"><PageRouter page={current} param={pageParam} /></div>
+            <div className="hidden md:block"><PageRouter page={current} param={pageParam} mode={pageMode} /></div>
             <div className="md:hidden"><MobileHomeScreen onNavigate={go} visiblePages={visiblePages} /></div>
           </>
         ) : (
-          <PageRouter page={current} param={pageParam} />
+          <PageRouter page={current} param={pageParam} mode={pageMode} />
         )}
       </main>
       <MobileTabBar current={current} onNavigate={go} visiblePages={visiblePages} />
@@ -1867,13 +1872,13 @@ function NavGroupButton({ group, current, onSelect }) {
   );
 }
 
-function PageRouter({ page, param }) {
+function PageRouter({ page, param, mode }) {
   switch (page) {
     case 'dashboard': return <DashboardScreen />;
-    case 'entry_voucher': return <VoucherModule key={param} initialTab={param} />;
+    case 'entry_voucher': return <VoucherModule key={`${param}_${mode}`} initialTab={param} initialMode={mode} />;
     case 'entry_jv': return <JournalVoucherModule />;
-    case 'entry_sale': return <SalesModule key={param} initialTab={param} />;
-    case 'entry_purchase': return <PurchaseModule key={param} initialTab={param} />;
+    case 'entry_sale': return <SalesModule key={`${param}_${mode}`} initialTab={param} initialMode={mode} />;
+    case 'entry_purchase': return <PurchaseModule key={`${param}_${mode}`} initialTab={param} initialMode={mode} />;
     case 'item_master': return <MaterialChartScreen />;
     case 'party_master': return <ChartOfAccountsScreen key={param} initialTab={param} />;
     case 'settings': return <SettingsScreen />;
@@ -2434,7 +2439,7 @@ function AddActionSheet({ open, onClose, onNavigate, visiblePages }) {
           {actions.map((a) => (
             <button
               key={a.label}
-              onClick={() => { onNavigate(a.page, a.param); onClose(); }}
+              onClick={() => { onNavigate(a.page, a.param, 'new'); onClose(); }}
               className="flex flex-col items-center gap-2 p-4 rounded-xl border hover:bg-gray-50"
               style={{ borderColor: THEME.line }}
             >
@@ -2529,7 +2534,7 @@ function MobileHomeScreen({ onNavigate, visiblePages }) {
         </div>
         <div className="flex items-center justify-between mt-6 gap-3">
           <button
-            onClick={() => onNavigate('entry_voucher', 'crv')}
+            onClick={() => onNavigate('entry_voucher', 'crv', 'new')}
             className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
             style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
           >
@@ -2543,7 +2548,7 @@ function MobileHomeScreen({ onNavigate, visiblePages }) {
             <Plus size={22} className="text-white" />
           </button>
           <button
-            onClick={() => onNavigate('entry_voucher', 'cpv')}
+            onClick={() => onNavigate('entry_voucher', 'cpv', 'new')}
             className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
             style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
           >
@@ -2665,9 +2670,11 @@ function purchaseDocLabel(invoiceType) {
     : invoiceType === 'purchase_return' ? 'Purchase Return' : 'Purchase Bill';
 }
 
-function PurchaseModule({ initialTab }) {
+function PurchaseModule({ initialTab, initialMode }) {
   const [tab, setTab] = useState(initialTab || 'purchase');
-  const [mode, setMode] = useState('new');
+  // Opening the page normally lands on the entries list ('old'); only a
+  // quick-add shortcut passes initialMode='new' to jump straight to entry.
+  const [mode, setMode] = useState(initialMode || 'old');
   // PurchaseEntryForm reports its own dirty state up so these tab/mode
   // buttons — which remount/discard it via `key={tab}` — can warn before
   // silently wiping an in-progress bill, the same protection the unsaved-
@@ -2690,7 +2697,7 @@ function PurchaseModule({ initialTab }) {
         <SegmentedBar
           options={PURCHASE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
           value={tab}
-          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('new'); }); }}
+          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('old'); }); }}
         />
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
@@ -2705,7 +2712,7 @@ function PurchaseModule({ initialTab }) {
           {PURCHASE_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('new'); }); }}
+              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('old'); }); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -3651,9 +3658,11 @@ function saleDocLabel(invoiceType) {
     : invoiceType === 'sale_return' ? 'Sale Return' : 'Sale Bill';
 }
 
-function SalesModule({ initialTab }) {
+function SalesModule({ initialTab, initialMode }) {
   const [tab, setTab] = useState(initialTab || 'sale');
-  const [mode, setMode] = useState('new');
+  // Opening the page normally lands on the entries list ('old'); only a
+  // quick-add shortcut passes initialMode='new' to jump straight to entry.
+  const [mode, setMode] = useState(initialMode || 'old');
   // SaleEntryForm reports its own dirty state up so these tab/mode buttons
   // — which remount/discard it via `key={tab}` — can warn before silently
   // wiping an in-progress bill, the same protection the unsaved-changes
@@ -3676,7 +3685,7 @@ function SalesModule({ initialTab }) {
         <SegmentedBar
           options={SALE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
           value={tab}
-          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('new'); }); }}
+          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('old'); }); }}
         />
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
@@ -3691,7 +3700,7 @@ function SalesModule({ initialTab }) {
           {SALE_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('new'); }); }}
+              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('old'); }); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -4401,9 +4410,11 @@ const VOUCHER_TABS = [
   { key: 'bpv', label: 'Bank Payment (BPV)', direction: 'payment', kind: 'bank' },
 ];
 
-function VoucherModule({ initialTab }) {
+function VoucherModule({ initialTab, initialMode }) {
   const [tab, setTab] = useState(initialTab || 'crv');
-  const [mode, setMode] = useState('new');
+  // Opening the page normally lands on the entries list ('old'); only a
+  // quick-add shortcut passes initialMode='new' to jump straight to entry.
+  const [mode, setMode] = useState(initialMode || 'old');
   const active = VOUCHER_TABS.find((t) => t.key === tab);
 
   return (
@@ -4413,7 +4424,7 @@ function VoucherModule({ initialTab }) {
           {VOUCHER_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { setTab(t.key); setMode('new'); }}
+              onClick={() => { setTab(t.key); setMode('old'); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -4813,7 +4824,8 @@ function emptyJvLine() {
 }
 
 function JournalVoucherModule() {
-  const [mode, setMode] = useState('new');
+  // Opening the page normally lands on the entries list.
+  const [mode, setMode] = useState('old');
   return (
     <div>
       <div className="flex items-center justify-between mb-5">
