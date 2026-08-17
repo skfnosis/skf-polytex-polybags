@@ -1,0 +1,24 @@
+-- ============================================================================
+-- SECURITY FIX: drop the stale, permission-check-less create_party() overload.
+-- ============================================================================
+-- create_party() has been redefined several times as new optional params
+-- (email/ntn/stn) were added. Because each redefinition used CREATE OR
+-- REPLACE with a DIFFERENT parameter list, Postgres kept the old signature
+-- around as a separate overload instead of replacing it -- so two versions
+-- of create_party(6 args) and create_party(9 args) currently coexist.
+--
+-- The old 6-arg version predates the permission check that was added to the
+-- 9-arg version, so it has NO has_permission() gate at all: any authenticated
+-- user -- even one with zero page permissions granted -- can call
+-- rpc/create_party with just the 6 original field names (omitting
+-- p_email/p_ntn/p_stn) and it will happily insert a new party, a new
+-- chart_of_accounts row, and an arbitrary opening-balance ledger posting,
+-- bypassing every permission check in the app.
+--
+-- The app's own JS wrapper always sends p_email/p_ntn/p_stn (see
+-- createParty() in src/App.jsx), so it only ever calls the safe 9-arg
+-- version; the 6-arg one is unreachable dead code left over from an earlier
+-- migration and can be dropped outright.
+-- ============================================================================
+
+drop function if exists public.create_party(text, text, text[], text, text, numeric);
