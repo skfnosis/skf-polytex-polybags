@@ -1805,14 +1805,7 @@ function AppShell() {
         mobileNavOpen={mobileNavOpen} onMenuClick={() => setMobileNavOpen((v) => !v)}
       />
       <main className="flex-1 p-4 md:p-6 overflow-auto pb-24 md:pb-6">
-        {current === 'dashboard' ? (
-          <>
-            <div className="hidden md:block"><PageRouter page={current} param={pageParam} mode={pageMode} /></div>
-            <div className="md:hidden"><MobileHomeScreen onNavigate={go} visiblePages={visiblePages} /></div>
-          </>
-        ) : (
-          <PageRouter page={current} param={pageParam} mode={pageMode} />
-        )}
+        <PageRouter page={current} param={pageParam} mode={pageMode} onNavigate={go} />
       </main>
       <MobileTabBar current={current} onNavigate={go} visiblePages={visiblePages} />
     </div>
@@ -1930,9 +1923,9 @@ function NavGroupButton({ group, current, onSelect }) {
   );
 }
 
-function PageRouter({ page, param, mode }) {
+function PageRouter({ page, param, mode, onNavigate }) {
   switch (page) {
-    case 'dashboard': return <DashboardScreen />;
+    case 'dashboard': return <DashboardScreen onNavigate={onNavigate} />;
     case 'entry_voucher': return <VoucherModule key={`${param}_${mode}`} initialTab={param} initialMode={mode} />;
     case 'entry_jv': return <JournalVoucherModule />;
     case 'entry_sale': return <SalesModule key={`${param}_${mode}`} initialTab={param} initialMode={mode} />;
@@ -2185,7 +2178,9 @@ function analysisDateRange(range, customFrom, customTo) {
   return { from: toDateInput(new Date(today.getFullYear(), today.getMonth() - 5, 1)), to: toDateInput(today) }; // 6m default
 }
 
-function DashboardScreen() {
+function DashboardScreen({ onNavigate }) {
+  const { visiblePages } = useAuth();
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
   const [from, setFrom] = useState(toDateInput(startOfMonth()));
   const [to, setTo] = useState(toDateInput(new Date()));
   const [loading, setLoading] = useState(true);
@@ -2294,6 +2289,66 @@ function DashboardScreen() {
 
   return (
     <div>
+      {/* Mobile-only hero — Total Balance at a glance, eye toggle, and
+          Receipt/Payment quick actions. Uses the same cashBank/balancesVisible
+          state as the Cash & Bank cards below, not a separate fetch — mobile
+          and desktop are one component now, so nothing shown here can ever
+          drift out of sync with what desktop shows. */}
+      <div className="md:hidden mb-5 rounded-3xl p-6" style={{ background: 'radial-gradient(circle at 30% 0%, #1A1F16 0%, #0B0C0A 70%)' }}>
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wide" style={{ color: '#9AA39A' }}>Total Balance</div>
+          <button
+            onClick={() => setBalancesVisible((v) => !v)}
+            aria-label={balancesVisible ? 'Hide balances' : 'Show balances'}
+            title={balancesVisible ? 'Hide balances' : 'Show balances'}
+            className="text-white/70 hover:text-white p-1 -m-1"
+          >
+            {balancesVisible ? <Eye size={16} /> : <EyeOff size={16} />}
+          </button>
+        </div>
+        <div className="text-3xl font-bold text-white mt-1">{maskPkr(cashTotal + bankTotal, balancesVisible)}</div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs" style={{ color: '#9AA39A' }}>
+          <span>Cash in Hand <span className="text-white font-medium">{maskPkr(cashTotal, balancesVisible)}</span></span>
+          <span>Bank Balance <span className="text-white font-medium">{maskPkr(bankTotal, balancesVisible)}</span></span>
+        </div>
+        {onNavigate && (
+          <div className="flex items-center justify-between mt-6 gap-3">
+            <button
+              onClick={() => onNavigate('entry_voucher', 'crv', 'new')}
+              className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
+              style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
+            >
+              <ArrowDownRight size={16} /> Receipt
+            </button>
+            <button
+              onClick={() => setAddSheetOpen(true)}
+              className="h-12 w-12 rounded-full flex items-center justify-center flex-shrink-0"
+              style={{ backgroundColor: '#14170F', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.18)' }}
+            >
+              <Plus size={22} className="text-white" />
+            </button>
+            <button
+              onClick={() => onNavigate('entry_voucher', 'cpv', 'new')}
+              className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
+              style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
+            >
+              <ArrowUpRight size={16} /> Payment
+            </button>
+          </div>
+        )}
+      </div>
+
+      {onNavigate && visiblePages.includes('party_master') && (
+        <div className="md:hidden mb-5">
+          <MobileListRow
+            icon={BookOpen} iconBg="#EEF2FF" iconColor={THEME.blue}
+            title="General Ledger" subtitle="Look up any party or account"
+            onClick={() => onNavigate('party_master', 'ledger')}
+            right={<ChevronRight size={18} className="text-gray-300" />}
+          />
+        </div>
+      )}
+
       <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
 
       {alerts.length > 0 && (
@@ -2512,6 +2567,9 @@ function DashboardScreen() {
         )}
       />
 
+      {onNavigate && (
+        <AddActionSheet open={addSheetOpen} onClose={() => setAddSheetOpen(false)} onNavigate={onNavigate} visiblePages={visiblePages} />
+      )}
     </div>
   );
 }
@@ -2571,137 +2629,6 @@ function MobileListRow({ icon: Icon, iconBg, iconColor, title, subtitle, right, 
       </div>
       {right}
     </Comp>
-  );
-}
-
-function MobileHomeScreen({ onNavigate, visiblePages }) {
-  const [from, setFrom] = useState(toDateInput(startOfMonth()));
-  const [to, setTo] = useState(toDateInput(new Date()));
-  const [loading, setLoading] = useState(true);
-  const [cashBank, setCashBank] = useState([]);
-  const [salesOverview, setSalesOverview] = useState([]);
-  const [paymentsSummary, setPaymentsSummary] = useState({ received: 0, made: 0 });
-  const [receivables, setReceivables] = useState({ total_receivables: 0, overdue_receivables: 0 });
-  const [payables, setPayables] = useState([]);
-  const [addSheetOpen, setAddSheetOpen] = useState(false);
-  // Hidden by default every time the dashboard opens — a pure client-side
-  // toggle (no refetch), never persisted, so a fresh open always re-masks.
-  const [balancesVisible, setBalancesVisible] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    Promise.all([
-      fetchCashBankBalances(),
-      fetchSalesOverview({ from, to }),
-      fetchPaymentsSummary({ from, to }),
-      fetchReceivablesOverdue(),
-      fetchPartyBalances({ type: 'supplier' }),
-    ]).then(([cb, so, ps, rec, pay]) => {
-      if (!alive) return;
-      setCashBank(cb); setSalesOverview(so); setPaymentsSummary(ps); setReceivables(rec);
-      setPayables(pay.filter((p) => p.balance < 0));
-    }).finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [from, to]);
-
-  if (loading && cashBank.length === 0) {
-    return <div className="py-20 flex justify-center"><Spinner /></div>;
-  }
-
-  const cashTotal = cashBank.filter((a) => a.cash_bank_kind === 'cash').reduce((s, a) => s + Number(a.balance), 0);
-  const bankTotal = cashBank.filter((a) => a.cash_bank_kind === 'bank').reduce((s, a) => s + Number(a.balance), 0);
-  const payablesTotal = payables.reduce((s, p) => s - Number(p.balance), 0);
-  const fabric = salesOverview.find((r) => r.category === 'fabric') || { amount: 0 };
-  const polybags = salesOverview.find((r) => r.category === 'polybags') || { amount: 0 };
-
-  return (
-    <div className="space-y-5 pb-4">
-      <div className="rounded-3xl p-6" style={{ background: 'radial-gradient(circle at 30% 0%, #1A1F16 0%, #0B0C0A 70%)' }}>
-        <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wide" style={{ color: '#9AA39A' }}>Total Balance</div>
-          <button
-            onClick={() => setBalancesVisible((v) => !v)}
-            aria-label={balancesVisible ? 'Hide balances' : 'Show balances'}
-            title={balancesVisible ? 'Hide balances' : 'Show balances'}
-            className="text-white/70 hover:text-white p-1 -m-1"
-          >
-            {balancesVisible ? <Eye size={16} /> : <EyeOff size={16} />}
-          </button>
-        </div>
-        <div className="text-3xl font-bold text-white mt-1">{maskPkr(cashTotal + bankTotal, balancesVisible)}</div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs" style={{ color: '#9AA39A' }}>
-          <span>Cash in Hand <span className="text-white font-medium">{maskPkr(cashTotal, balancesVisible)}</span></span>
-          <span>Bank Balance <span className="text-white font-medium">{maskPkr(bankTotal, balancesVisible)}</span></span>
-        </div>
-        <div className="flex items-center justify-between mt-6 gap-3">
-          <button
-            onClick={() => onNavigate('entry_voucher', 'crv', 'new')}
-            className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
-            style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
-          >
-            <ArrowDownRight size={16} /> Receipt
-          </button>
-          <button
-            onClick={() => setAddSheetOpen(true)}
-            className="h-12 w-12 rounded-full flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: '#14170F', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.18)' }}
-          >
-            <Plus size={22} className="text-white" />
-          </button>
-          <button
-            onClick={() => onNavigate('entry_voucher', 'cpv', 'new')}
-            className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-medium text-white"
-            style={{ backgroundColor: 'rgba(255,255,255,0.1)' }}
-          >
-            <ArrowUpRight size={16} /> Payment
-          </button>
-        </div>
-      </div>
-
-      <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
-
-      <div>
-        <SectionHeading>Overview</SectionHeading>
-        <div className="space-y-2">
-          {visiblePages.includes('party_master') && (
-            <MobileListRow
-              icon={BookOpen} iconBg="#EEF2FF" iconColor={THEME.blue}
-              title="General Ledger" subtitle="Look up any party or account"
-              onClick={() => onNavigate('party_master', 'ledger')}
-              right={<ChevronRight size={18} className="text-gray-300" />}
-            />
-          )}
-          <MobileListRow
-            icon={ShoppingCart} iconBg="#E9F8F0" iconColor={THEME.success}
-            title="Fabric Sale" subtitle={`${formatDate(from)} – ${formatDate(to)}`}
-            right={<span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(fabric.amount)}</span>}
-          />
-          <MobileListRow
-            icon={ShoppingCart} iconBg="#E9F8F0" iconColor={THEME.success}
-            title="Poly Bag Sale" subtitle={`${formatDate(from)} – ${formatDate(to)}`}
-            right={<span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(polybags.amount)}</span>}
-          />
-          <MobileListRow
-            icon={ArrowDownRight} iconBg="#E9F8F0" iconColor={THEME.success}
-            title="Total Receipt" subtitle={`${formatDate(from)} – ${formatDate(to)}`}
-            right={<span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(paymentsSummary.received)}</span>}
-          />
-          <MobileListRow
-            icon={Users} iconBg="#EEF2FF" iconColor={THEME.blue}
-            title="Total Receivables" subtitle="All customers"
-            right={<span className="text-sm font-semibold" style={{ color: THEME.blue }}>{formatPkr(receivables.total_receivables)}</span>}
-          />
-          <MobileListRow
-            icon={Users} iconBg="#FBF3E5" iconColor={THEME.amber}
-            title="Total Payables" subtitle="All vendors"
-            right={<span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(payablesTotal)}</span>}
-          />
-        </div>
-      </div>
-
-      <AddActionSheet open={addSheetOpen} onClose={() => setAddSheetOpen(false)} onNavigate={onNavigate} visiblePages={visiblePages} />
-    </div>
   );
 }
 
