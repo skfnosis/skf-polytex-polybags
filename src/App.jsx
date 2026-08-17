@@ -404,6 +404,29 @@ async function fetchPartyBalances({ type, positiveOnly = false } = {}) {
   return positiveOnly ? (data || []).filter((r) => r.balance > 0) : (data || []);
 }
 
+// Receivable/payable-nature balances that live on a plain Chart of Accounts
+// row rather than a party — e.g. "Loans Receivable", "Committee Receivable",
+// "Loans Payables" opened via Admin > Chart of Accounts. Total
+// Receivable/Payable above only ever reflects customer/vendor party
+// balances, so these need their own tally to not go missing from the
+// Dashboard entirely.
+async function fetchNonPartyAccountBalances(type) {
+  const { data: accounts, error: e1 } = await supabase.from('chart_of_accounts').select('id, name').eq('type', type);
+  if (e1) throw e1;
+  if (!accounts || accounts.length === 0) return [];
+  const ids = accounts.map((a) => a.id);
+  const { data: entries, error: e2 } = await supabase.from('ledger_entries').select('account_id, debit, credit').in('account_id', ids);
+  if (e2) throw e2;
+  const balById = {};
+  (entries || []).forEach((e) => {
+    balById[e.account_id] = (balById[e.account_id] || 0) + Number(e.debit) - Number(e.credit);
+  });
+  return accounts
+    .map((a) => ({ id: a.id, name: a.name, balance: balById[a.id] || 0 }))
+    .filter((a) => a.balance !== 0)
+    .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
+}
+
 async function fetchPaymentsSummary({ from, to }) {
   const { data, error } = await supabase.from('payments').select('amount, direction')
     .eq('status', 'posted').gte('payment_date', from).lte('payment_date', to);
@@ -2166,6 +2189,8 @@ function DashboardScreen() {
   const [receivables, setReceivables] = useState({ total_receivables: 0, overdue_receivables: 0 });
   const [payables, setPayables] = useState([]);
   const [customerBalances, setCustomerBalances] = useState([]);
+  const [otherReceivables, setOtherReceivables] = useState([]); // non-party asset accounts, e.g. Loans/Committee Receivable
+  const [otherPayables, setOtherPayables] = useState([]); // non-party liability accounts, e.g. Loans Payables
   const [expensesAndDrawings, setExpensesAndDrawings] = useState({ expenses: 0, drawings: 0 });
   const [monthlyBreakdown, setMonthlyBreakdown] = useState([]);
   const [breakdownLoading, setBreakdownLoading] = useState(true);
@@ -2183,6 +2208,8 @@ function DashboardScreen() {
   const [ledgerAccount, setLedgerAccount] = useState(null); // { id, name } | null
   const [receivablesModalOpen, setReceivablesModalOpen] = useState(false);
   const [payablesModalOpen, setPayablesModalOpen] = useState(false);
+  const [otherReceivablesModalOpen, setOtherReceivablesModalOpen] = useState(false);
+  const [otherPayablesModalOpen, setOtherPayablesModalOpen] = useState(false);
   // Hidden by default every time the dashboard opens — pure client-side
   // toggle (no refetch), never persisted, so a fresh open always re-masks.
   const [balancesVisible, setBalancesVisible] = useState(false);
@@ -2197,14 +2224,18 @@ function DashboardScreen() {
       fetchReceivablesOverdue(),
       fetchPartyBalances({ type: 'supplier' }),
       fetchPartyBalances({ type: 'customer', positiveOnly: true }),
+      fetchNonPartyAccountBalances('asset'),
+      fetchNonPartyAccountBalances('liability'),
       fetchExpensesAndDrawings({ from, to }),
       fetchAppSettings(),
-    ]).then(([cb, so, ps, rec, pay, debtors, ed, settings]) => {
+    ]).then(([cb, so, ps, rec, pay, debtors, otherRec, otherPay, ed, settings]) => {
       if (!alive) return;
       setCashBank(cb);
       setSalesOverview(so); setPaymentsSummary(ps); setReceivables(rec);
       setPayables(pay.filter((p) => p.balance < 0));
       setCustomerBalances(debtors);
+      setOtherReceivables(otherRec.filter((a) => a.balance > 0));
+      setOtherPayables(otherPay.filter((a) => a.balance < 0));
       setExpensesAndDrawings(ed);
       setAppSettings(settings);
     }).finally(() => { if (alive) setLoading(false); });
@@ -2231,6 +2262,8 @@ function DashboardScreen() {
   const cashTotal = cashAccounts.reduce((s, a) => s + Number(a.balance), 0);
   const bankTotal = bankAccounts.reduce((s, a) => s + Number(a.balance), 0);
   const payablesTotal = payables.reduce((s, p) => s - Number(p.balance), 0);
+  const otherReceivablesTotal = otherReceivables.reduce((s, a) => s + Number(a.balance), 0);
+  const otherPayablesTotal = otherPayables.reduce((s, a) => s - Number(a.balance), 0);
   const salesTotal = salesOverview.reduce((s, r) => s + Number(r.amount), 0);
 
   const graphData = monthlyBreakdown.map((r) => ({
@@ -2309,6 +2342,14 @@ function DashboardScreen() {
           onClick={() => setReceivablesModalOpen(true)} sub="Tap for customer-wise balances" />
         <StatCard title="Total Payable" icon={Users} color={THEME.amber} value={formatPkr(payablesTotal)}
           onClick={() => setPayablesModalOpen(true)} sub="Tap for vendor-wise balances" />
+        {otherReceivables.length > 0 && (
+          <StatCard title="Other Receivables" icon={Users} color={THEME.blue} value={formatPkr(otherReceivablesTotal)}
+            onClick={() => setOtherReceivablesModalOpen(true)} sub="Loans, committee etc. — tap for details" />
+        )}
+        {otherPayables.length > 0 && (
+          <StatCard title="Other Payables" icon={Users} color={THEME.amber} value={formatPkr(otherPayablesTotal)}
+            onClick={() => setOtherPayablesModalOpen(true)} sub="Loans etc. — tap for details" />
+        )}
       </div>
 
       {/* Row 4 — Payment */}
@@ -2434,6 +2475,32 @@ function DashboardScreen() {
           <div key={p.party_id} className="flex items-center justify-between px-1 py-3">
             <span className="text-sm">{p.name}</span>
             <span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(-p.balance)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={otherReceivablesModalOpen}
+        onClose={() => setOtherReceivablesModalOpen(false)}
+        title="Other receivables"
+        rows={otherReceivables}
+        renderRow={(a) => (
+          <div key={a.id} className="flex items-center justify-between px-1 py-3">
+            <span className="text-sm">{a.name}</span>
+            <span className="text-sm font-semibold" style={{ color: THEME.blue }}>{formatPkr(a.balance)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={otherPayablesModalOpen}
+        onClose={() => setOtherPayablesModalOpen(false)}
+        title="Other payables"
+        rows={otherPayables}
+        renderRow={(a) => (
+          <div key={a.id} className="flex items-center justify-between px-1 py-3">
+            <span className="text-sm">{a.name}</span>
+            <span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(-a.balance)}</span>
           </div>
         )}
       />
