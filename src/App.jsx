@@ -601,9 +601,16 @@ async function fetchTrialBalance() {
   return data;
 }
 
-async function fetchPartyStatement(partyId) {
+// Filters on the party's own ledger account, not party_id — create_invoice/
+// record_payment/etc. denormalize party_id onto BOTH ledger rows of a
+// transaction (the party's own account AND the offsetting trade/cash
+// account), so filtering by party_id alone pulls in both legs of every
+// posting. Those always net to zero, which silently zeroed out every
+// party's Statement page (same root cause v_party_balances had — see that
+// migration's notes — just a second, unpatched code path).
+async function fetchPartyStatement(ledgerAccountId) {
   const { data, error } = await supabase.from('ledger_entries')
-    .select('*, chart_of_accounts(name), parties(name)').eq('party_id', partyId).order('entry_date');
+    .select('*, chart_of_accounts(name), parties(name)').eq('account_id', ledgerAccountId).order('entry_date');
   if (error) throw error;
   return data;
 }
@@ -6009,9 +6016,9 @@ function PartyStatementView({ party: initialParty, onBack, onUpdated }) {
 
   useEffect(() => {
     let alive = true;
-    fetchPartyStatement(party.id).then((rows) => { if (alive) setEntries(rows); }).finally(() => { if (alive) setLoading(false); });
+    fetchPartyStatement(party.ledger_account_id).then((rows) => { if (alive) setEntries(rows); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [party.id]);
+  }, [party.ledger_account_id]);
 
   let running = 0;
   const rows = entries.map((e) => {
