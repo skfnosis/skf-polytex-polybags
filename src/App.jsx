@@ -1753,14 +1753,28 @@ const NAV_GROUPS = [
   { label: 'Admin', keys: ['settings'] },
 ];
 
+const LAST_PAGE_KEY = 'skf_last_page';
+function loadLastPage() {
+  try {
+    const raw = localStorage.getItem(LAST_PAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 function AppShell() {
   const { profile, visiblePages, signOut, authError } = useAuth();
-  const [current, setCurrent] = useState(null);
-  const [pageParam, setPageParam] = useState(null);
+  // Reopens on whatever page/tab/mode you last had open — including an
+  // in-progress "New" entry form, so a reload lands you right back where
+  // the draft-restore prompt (if any) will show, instead of the Dashboard.
+  const lastPage = loadLastPage();
+  const [current, setCurrent] = useState(lastPage?.page || null);
+  const [pageParam, setPageParam] = useState(lastPage?.param || null);
   // Distinguishes "opened the page normally" (land on the entries list, mode
   // stays null -> module defaults to 'old') from "tapped a quick-add
   // shortcut" (mode 'new' -> module jumps straight into the entry form).
-  const [pageMode, setPageMode] = useState(null);
+  const [pageMode, setPageMode] = useState(lastPage?.mode || null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -1773,6 +1787,7 @@ function AppShell() {
     setPageParam(param);
     setPageMode(mode);
     setMobileNavOpen(false);
+    try { localStorage.setItem(LAST_PAGE_KEY, JSON.stringify({ page: pageKey, param, mode })); } catch { /* best-effort */ }
   }
 
   const visibleGroups = NAV_GROUPS
