@@ -308,11 +308,30 @@ async function fetchStockBalance() {
 async function fetchInvoiceWithItems(invoiceId) {
   const [{ data: invoice, error }, { data: items, error: itemsError }] = await Promise.all([
     supabase.from('invoices').select('*, parties(name)').eq('id', invoiceId).single(),
-    supabase.from('invoice_items').select('*, items(name, item_type)').eq('invoice_id', invoiceId),
+    supabase.from('invoice_items').select('*, items(name, item_type), parties(name)').eq('invoice_id', invoiceId),
   ]);
   if (error) throw error;
   if (itemsError) throw itemsError;
   return { invoice, items };
+}
+
+// Purchase Bill lines reserved for a customer (via the line's "Sell to"
+// picker) that haven't been pulled into a Sale Bill yet — the Sale Bill's
+// suggestion panel reads these once a customer is selected.
+async function fetchOpenPurchaseReservations(partyId) {
+  if (!partyId) return [];
+  const { data, error } = await supabase.from('v_open_purchase_reservations').select().eq('reserved_for_party_id', partyId).order('invoice_date');
+  if (error) throw error;
+  return data || [];
+}
+
+// Every purchase line already pulled into some Sale Bill, as a Set of
+// purchase invoice_item ids — used to badge a reserved purchase line
+// "Billed" once it's been used, so it can't be suggested (or picked) twice.
+async function fetchFulfilledPurchaseItemIds() {
+  const { data, error } = await supabase.from('invoice_items').select('fulfilled_from_item_id').not('fulfilled_from_item_id', 'is', null);
+  if (error) throw error;
+  return new Set((data || []).map((r) => r.fulfilled_from_item_id));
 }
 
 async function fetchAppSettings() {
@@ -454,6 +473,8 @@ async function createInvoice({
       description: i.description || '',
       narration: i.narration || '',
       item_type: i.itemType || 'product',
+      reserved_for_party_id: i.reservedForPartyId || null,
+      fulfilled_from_item_id: i.fulfilledFromItemId || null,
     })),
     p_supplier_invoice_no: supplierInvoiceNo || null,
     p_linked_order_id: linkedOrderId || null,
@@ -484,6 +505,8 @@ async function updateInvoice(invoiceId, {
       description: i.description || '',
       narration: i.narration || '',
       item_type: i.itemType || 'product',
+      reserved_for_party_id: i.reservedForPartyId || null,
+      fulfilled_from_item_id: i.fulfilledFromItemId || null,
     })),
     p_supplier_invoice_no: supplierInvoiceNo || null,
     p_linked_order_id: linkedOrderId || null,
@@ -2801,6 +2824,10 @@ function emptyPurchaseLine(defaultItem) {
   return {
     itemId: defaultItem?.id || null, itemName: defaultItem?.name || '',
     unit: 'KG', quantity: '', rate: '', narration: '', itemType: defaultItem?.item_type || 'product',
+    // Optional: earmarks this line for a customer at purchase time, so it
+    // can be suggested (and auto-filled) when that customer's Sale Bill is
+    // entered later. Purchase Bill only — see PurchaseEntryForm's isBill.
+    reservedForPartyId: null, reservedForPartyName: '',
   };
 }
 
@@ -2900,6 +2927,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
           itemType: it.items?.item_type || 'product',
           unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
           narration: it.narration || '',
+          reservedForPartyId: it.reserved_for_party_id || null, reservedForPartyName: it.parties?.name || '',
         })));
         setEditInvoiceNo(invoice.invoice_no);
         lineRefs.current = {};
@@ -2999,6 +3027,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
         itemType: it.items?.item_type || 'product',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
         narration: it.narration || '',
+        reservedForPartyId: it.reserved_for_party_id || null, reservedForPartyName: it.parties?.name || '',
       })));
     } catch (e) {
       show(`Could not load purchase order: ${e.message}`, 'danger');
@@ -3027,7 +3056,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
-      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType }));
+      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType, reservedForPartyId: l.reservedForPartyId }));
       if (editInvoiceId) {
         await updateInvoice(editInvoiceId, {
           partyId: vendor.id, invoiceDate: date, items: itemsPayload,
@@ -3161,6 +3190,17 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
           }}
         />
       ),
+      // Earmarks this line for a customer — surfaced as a suggestion (with
+      // auto-fill) when that customer's Sale Bill is entered later. Bill only.
+      sellTo: (
+        <PartyPicker
+          type="customer"
+          value={line.reservedForPartyId ? { id: line.reservedForPartyId, name: line.reservedForPartyName } : null}
+          onChange={(p) => updateLine(i, { reservedForPartyId: p?.id || null, reservedForPartyName: p?.name || '' })}
+          resetKey={`${i}-${line.reservedForPartyId || 'none'}`}
+          label="Sell to (optional)"
+        />
+      ),
       amount: formatPkr((Number(line.quantity) || 0) * (Number(line.rate) || 0)),
     };
   }
@@ -3221,6 +3261,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
               <th className="text-left font-medium px-3 py-2.5">Qty</th>
               <th className="text-left font-medium px-3 py-2.5">Rate</th>
               <th className="text-left font-medium px-3 py-2.5 w-1/5">Narration</th>
+              {isBill && <th className="text-left font-medium px-3 py-2.5 w-1/5">Sell to</th>}
               <th className="text-left font-medium px-3 py-2.5">Amount</th>
               <th className="px-2 py-2.5" />
             </tr>
@@ -3235,6 +3276,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
                   <td className="px-3 py-2 w-24">{f.qty}</td>
                   <td className="px-3 py-2 w-28">{f.rate}</td>
                   <td className="px-3 py-2">{f.narration}</td>
+                  {isBill && <td className="px-3 py-2">{f.sellTo}</td>}
                   <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
                   <td className="px-2 py-2 pt-4">
                     <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
@@ -3270,6 +3312,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
                 </div>
               </div>
               {f.narration}
+              {isBill && f.sellTo}
             </Card>
           );
         })}
@@ -3578,6 +3621,16 @@ function VoidReasonModal({ target, onClose, onConfirm }) {
 }
 
 function PurchaseViewModal({ doc, onClose }) {
+  const [fulfilledSet, setFulfilledSet] = useState(new Set());
+  const hasReservations = doc?.items?.some((it) => it.reserved_for_party_id);
+
+  useEffect(() => {
+    if (!hasReservations) { setFulfilledSet(new Set()); return; }
+    let alive = true;
+    fetchFulfilledPurchaseItemIds().then((s) => { if (alive) setFulfilledSet(s); });
+    return () => { alive = false; };
+  }, [doc?.invoice?.id, hasReservations]);
+
   if (!doc) return null;
   const { invoice, items } = doc;
   return (
@@ -3599,6 +3652,7 @@ function PurchaseViewModal({ doc, onClose }) {
                 <th className="text-left px-3 py-2">Rate</th>
                 <th className="text-left px-3 py-2">Narration</th>
                 <th className="text-left px-3 py-2">Amount</th>
+                {hasReservations && <th className="text-left px-3 py-2">Sell to</th>}
               </tr>
             </thead>
             <tbody>
@@ -3610,6 +3664,18 @@ function PurchaseViewModal({ doc, onClose }) {
                   <td className="px-3 py-2">{formatPkr(it.rate)}</td>
                   <td className="px-3 py-2 text-gray-500">{it.narration || ''}</td>
                   <td className="px-3 py-2">{formatPkr(it.amount)}</td>
+                  {hasReservations && (
+                    <td className="px-3 py-2">
+                      {it.reserved_for_party_id ? (
+                        <span className="flex items-center gap-1.5">
+                          {it.parties?.name || '—'}
+                          {fulfilledSet.has(it.id)
+                            ? <Badge tone="success">Billed</Badge>
+                            : <Badge tone="amber">Pending</Badge>}
+                        </span>
+                      ) : '—'}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -3643,6 +3709,7 @@ function PurchaseOldList({ invoiceType, onEdit }) {
   const [viewDoc, setViewDoc] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [reservationInfo, setReservationInfo] = useState({});
   const { show, ToastHost } = useToast();
 
   useEffect(() => {
@@ -3659,6 +3726,30 @@ function PurchaseOldList({ invoiceType, onEdit }) {
     }
     return () => { alive = false; };
   }, [invoiceType, from, to, vendor, invoiceNo, refreshKey]);
+
+  // For Purchase Bills only: which rows have lines reserved for a customer,
+  // and how many of those lines have already been pulled into a Sale Bill
+  // ("Billed") vs are still waiting ("Reserved").
+  useEffect(() => {
+    if (invoiceType !== 'purchase' || !rows || rows.length === 0) { setReservationInfo({}); return; }
+    let alive = true;
+    (async () => {
+      const ids = rows.map((r) => r.id);
+      const [{ data: resItems, error }, fulfilledSet] = await Promise.all([
+        supabase.from('invoice_items').select('id, invoice_id').in('invoice_id', ids).not('reserved_for_party_id', 'is', null),
+        fetchFulfilledPurchaseItemIds(),
+      ]);
+      if (error || !alive) return;
+      const info = {};
+      (resItems || []).forEach((it) => {
+        if (!info[it.invoice_id]) info[it.invoice_id] = { total: 0, billed: 0 };
+        info[it.invoice_id].total += 1;
+        if (fulfilledSet.has(it.id)) info[it.invoice_id].billed += 1;
+      });
+      setReservationInfo(info);
+    })();
+    return () => { alive = false; };
+  }, [invoiceType, rows]);
 
   const filtered = poNo
     ? (rows || []).filter((r) => (orderLookup[r.linked_order_id] || '').toLowerCase().includes(poNo.toLowerCase()))
@@ -3731,6 +3822,13 @@ function PurchaseOldList({ invoiceType, onEdit }) {
                 <div className="font-medium flex items-center gap-2">
                   {row.invoice_no}
                   {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
+                  {reservationInfo[row.id] && (
+                    reservationInfo[row.id].billed >= reservationInfo[row.id].total
+                      ? <Badge tone="success">Billed</Badge>
+                      : reservationInfo[row.id].billed > 0
+                        ? <Badge tone="amber">{`Partly billed (${reservationInfo[row.id].billed}/${reservationInfo[row.id].total})`}</Badge>
+                        : <Badge tone="amber">Reserved — not billed</Badge>
+                  )}
                   {invoiceType === 'purchase' && orderLookup[row.linked_order_id] && (
                     <span className="text-xs text-gray-400">from {orderLookup[row.linked_order_id]}</span>
                   )}
@@ -3883,6 +3981,10 @@ function emptySaleLine(defaultItem) {
   return {
     itemId: defaultItem?.id || null, itemName: defaultItem?.name || '',
     unit: 'KG', quantity: '', rate: '', narration: '', itemType: defaultItem?.item_type || 'product',
+    // Set when this line was auto-filled from a suggested Purchase Bill
+    // reservation — records the link so that purchase line shows "Billed"
+    // and stops being suggested again.
+    fulfilledFromItemId: null,
   };
 }
 
@@ -3906,6 +4008,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
 
   const [customerPoNo, setCustomerPoNo] = useState('');
   const [soOptions, setSoOptions] = useState([]);
+  const [openReservations, setOpenReservations] = useState([]);
   const [linkedOrder, setLinkedOrder] = useState(null);
   // Hidden from the entry UI (see brief), but kept so the total formula and
   // create_invoice's params stay unchanged — they just always send 0 now.
@@ -3982,7 +4085,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
           itemId: it.item_id, itemName: it.items?.name || it.description || '',
           itemType: it.items?.item_type || 'product',
           unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
-          narration: it.narration || '',
+          narration: it.narration || '', fulfilledFromItemId: it.fulfilled_from_item_id || null,
         })));
         setEditInvoiceNo(invoice.invoice_no);
         lineRefs.current = {};
@@ -4021,6 +4124,33 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     fetchOpenSaleOrders(customer.id).then((rows) => { if (alive) setSoOptions(rows); });
     return () => { alive = false; };
   }, [isBill, customer]);
+
+  // Purchase Bill lines already earmarked ("sold to") this customer, not
+  // yet pulled into a Sale Bill — surfaced as one-click suggestions below.
+  useEffect(() => {
+    if (!isBill || !customer) { setOpenReservations([]); return; }
+    let alive = true;
+    fetchOpenPurchaseReservations(customer.id).then((rows) => { if (alive) setOpenReservations(rows); });
+    return () => { alive = false; };
+  }, [isBill, customer]);
+
+  function fillLineFromReservation(res) {
+    setLines((ls) => {
+      // A line pre-filled by the default-item logic (itemId set, no qty
+      // entered yet) is still "empty" for this purpose — overwrite it
+      // instead of appending a duplicate line.
+      const emptyIdx = ls.findIndex((l) => !Number(l.quantity));
+      const filled = {
+        itemId: res.item_id, itemName: res.item_name || res.description || '',
+        itemType: res.item_type || 'product', unit: res.unit,
+        quantity: String(res.quantity), rate: '', narration: '',
+        fulfilledFromItemId: res.id,
+      };
+      if (emptyIdx !== -1) return ls.map((l, idx) => (idx === emptyIdx ? filled : l));
+      return [...ls, filled];
+    });
+    setOpenReservations((rs) => rs.filter((r) => r.id !== res.id));
+  }
 
   // Default quality: LLD Polybag, for the Polybags brand only.
   useEffect(() => {
@@ -4093,7 +4223,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
         itemType: it.items?.item_type || 'product',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
-        narration: it.narration || '',
+        narration: it.narration || '', fulfilledFromItemId: it.fulfilled_from_item_id || null,
       })));
     } catch (e) {
       show(`Could not load sale order: ${e.message}`, 'danger');
@@ -4122,7 +4252,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
-      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType }));
+      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType, fulfilledFromItemId: l.fulfilledFromItemId }));
       if (editInvoiceId) {
         await updateInvoice(editInvoiceId, {
           partyId: customer.id, invoiceDate: date, items: itemsPayload,
@@ -4318,6 +4448,33 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
           </Select>
           {!customer && <p className="text-xs text-gray-500 sm:col-span-2">Pick a customer first to see their open sale orders.</p>}
           {linkedOrder && <p className="text-xs text-gray-500 sm:col-span-2">Loaded from {linkedOrder.invoice_no} — quantities below are editable for partial billing.</p>}
+        </Card>
+      )}
+
+      {isBill && openReservations.length > 0 && (
+        <Card className="p-4 mb-5" style={{ borderColor: THEME.line }}>
+          <h3 className="font-medium text-sm text-gray-700 mb-2">
+            Suggested from Purchase — already reserved for {customer?.name}
+          </h3>
+          <div className="space-y-2">
+            {openReservations.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => fillLineFromReservation(r)}
+                className="w-full flex items-center justify-between gap-3 text-left px-3 py-2 rounded-lg border hover:bg-gray-50"
+                style={{ borderColor: THEME.line }}
+              >
+                <span className="min-w-0">
+                  <span className="font-medium">{r.item_name || r.description}</span>
+                  <span className="text-gray-500 text-xs block sm:inline sm:ml-2">
+                    {formatDate(r.invoice_date)} · {r.invoice_no}
+                  </span>
+                </span>
+                <span className="font-medium whitespace-nowrap">{r.quantity} {r.unit}</span>
+              </button>
+            ))}
+          </div>
         </Card>
       )}
 
