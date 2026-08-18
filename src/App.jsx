@@ -2331,7 +2331,9 @@ function DashboardScreen({ onNavigate }) {
           Receipt/Payment quick actions. Uses the same cashBank/balancesVisible
           state as the Cash & Bank cards below, not a separate fetch — mobile
           and desktop are one component now, so nothing shown here can ever
-          drift out of sync with what desktop shows. */}
+          drift out of sync with what desktop shows. The Cash in Hand / Bank
+          Balance breakdown itself lives only in the cards below (shared with
+          desktop) — showing it here too just duplicated it on mobile. */}
       <div className="md:hidden mb-5 rounded-3xl p-6" style={{ background: 'radial-gradient(circle at 30% 0%, #1A1F16 0%, #0B0C0A 70%)' }}>
         <div className="flex items-center justify-between">
           <div className="text-xs uppercase tracking-wide" style={{ color: '#9AA39A' }}>Total Balance</div>
@@ -2345,10 +2347,6 @@ function DashboardScreen({ onNavigate }) {
           </button>
         </div>
         <div className="text-3xl font-bold text-white mt-1">{maskPkr(cashTotal + bankTotal, balancesVisible)}</div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs" style={{ color: '#9AA39A' }}>
-          <span>Cash in Hand <span className="text-white font-medium">{maskPkr(cashTotal, balancesVisible)}</span></span>
-          <span>Bank Balance <span className="text-white font-medium">{maskPkr(bankTotal, balancesVisible)}</span></span>
-        </div>
         {onNavigate && (
           <div className="flex items-center justify-between mt-6 gap-3">
             <button
