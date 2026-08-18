@@ -476,6 +476,7 @@ async function createInvoice({
       reserved_for_party_id: i.reservedForPartyId || null,
       fulfilled_from_item_id: i.fulfilledFromItemId || null,
       color: i.color || null,
+      gsm: i.gsm || null,
     })),
     p_supplier_invoice_no: supplierInvoiceNo || null,
     p_linked_order_id: linkedOrderId || null,
@@ -509,6 +510,7 @@ async function updateInvoice(invoiceId, {
       reserved_for_party_id: i.reservedForPartyId || null,
       fulfilled_from_item_id: i.fulfilledFromItemId || null,
       color: i.color || null,
+      gsm: i.gsm || null,
     })),
     p_supplier_invoice_no: supplierInvoiceNo || null,
     p_linked_order_id: linkedOrderId || null,
@@ -2830,8 +2832,8 @@ function emptyPurchaseLine(defaultItem) {
     // can be suggested (and auto-filled) when that customer's Sale Bill is
     // entered later. Purchase Bill only — see PurchaseEntryForm's isBill.
     reservedForPartyId: null, reservedForPartyName: '',
-    // Optional free-text color, shown for fabric-category brands only.
-    color: '',
+    // Optional free-text color/GSM, shown for fabric-category brands only.
+    color: '', gsm: '',
   };
 }
 
@@ -2870,7 +2872,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     if (!lineRefs.current[i]) {
       lineRefs.current[i] = {
         item: React.createRef(), unit: React.createRef(), qty: React.createRef(),
-        rate: React.createRef(), color: React.createRef(), narration: React.createRef(),
+        rate: React.createRef(), color: React.createRef(), gsm: React.createRef(), narration: React.createRef(),
       };
     }
     return lineRefs.current[i];
@@ -2930,7 +2932,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
           itemId: it.item_id, itemName: it.items?.name || it.description || '',
           itemType: it.items?.item_type || 'product',
           unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
-          narration: it.narration || '', color: it.color || '',
+          narration: it.narration || '', color: it.color || '', gsm: it.gsm || '',
           reservedForPartyId: it.reserved_for_party_id || null, reservedForPartyName: it.parties?.name || '',
         })));
         setEditInvoiceNo(invoice.invoice_no);
@@ -3030,7 +3032,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
         itemType: it.items?.item_type || 'product',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
-        narration: it.narration || '', color: it.color || '',
+        narration: it.narration || '', color: it.color || '', gsm: it.gsm || '',
         reservedForPartyId: it.reserved_for_party_id || null, reservedForPartyName: it.parties?.name || '',
       })));
     } catch (e) {
@@ -3060,7 +3062,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
-      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType, reservedForPartyId: l.reservedForPartyId, color: l.color }));
+      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType, reservedForPartyId: l.reservedForPartyId, color: l.color, gsm: l.gsm }));
       if (editInvoiceId) {
         await updateInvoice(editInvoiceId, {
           partyId: vendor.id, invoiceDate: date, items: itemsPayload,
@@ -3111,7 +3113,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     };
     const pseudoItems = lines.filter((l) => l.itemId).map((l) => ({
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
-      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration, color: l.color,
+      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration, color: l.color, gsm: l.gsm,
     }));
     return { pseudoInvoice, pseudoItems };
   }
@@ -3191,6 +3193,15 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
           label="Color (optional)" value={line.color}
           placeholder="e.g. Sky Blue"
           onChange={(e) => updateLine(i, { color: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).gsm.current?.focus(); } }}
+        />
+      ),
+      gsm: (
+        <Input
+          ref={getLineRefs(i).gsm}
+          label="GSM (optional)" value={line.gsm}
+          placeholder="e.g. 120"
+          onChange={(e) => updateLine(i, { gsm: e.target.value })}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).narration.current?.focus(); } }}
         />
       ),
@@ -3280,6 +3291,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
               <th className="text-left font-medium px-3 py-2.5">Qty</th>
               <th className="text-left font-medium px-3 py-2.5">Rate</th>
               {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">Color</th>}
+              {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">GSM</th>}
               <th className="text-left font-medium px-3 py-2.5 w-1/5">Narration</th>
               {isBill && <th className="text-left font-medium px-3 py-2.5 w-1/5">Sell to</th>}
               <th className="text-left font-medium px-3 py-2.5">Amount</th>
@@ -3296,6 +3308,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
                   <td className="px-3 py-2 w-24">{f.qty}</td>
                   <td className="px-3 py-2 w-28">{f.rate}</td>
                   {brand.category === 'fabric' && <td className="px-3 py-2">{f.color}</td>}
+                  {brand.category === 'fabric' && <td className="px-3 py-2">{f.gsm}</td>}
                   <td className="px-3 py-2">{f.narration}</td>
                   {isBill && <td className="px-3 py-2">{f.sellTo}</td>}
                   <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
@@ -3333,6 +3346,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
                 </div>
               </div>
               {brand.category === 'fabric' && f.color}
+              {brand.category === 'fabric' && f.gsm}
               {f.narration}
               {isBill && f.sellTo}
             </Card>
@@ -3442,14 +3456,14 @@ async function buildTradeDocPdf({ invoice, items, docLabel, partyRoleLabel, refL
   const isFabric = invoice.category === 'fabric';
   const rows = items.map((it) => {
     const row = [it.items?.name || it.description || '', it.unit, String(it.quantity), formatPkr(it.rate)];
-    if (isFabric) row.push(it.color || '');
+    if (isFabric) row.push(it.color || '', it.gsm || '');
     row.push(it.narration || '', formatPkr(it.amount));
     return row;
   });
   const subtotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
   const extraCharges = Number(invoice.transport_charges || 0) + Number(invoice.loading_charges || 0)
     + Number(invoice.tax_amount || 0) - Number(invoice.discount_amount || 0);
-  const footPrefix = isFabric ? ['', '', '', '', ''] : ['', '', '', ''];
+  const footPrefix = isFabric ? ['', '', '', '', '', ''] : ['', '', '', ''];
   const foot = [[...footPrefix, 'Subtotal', formatPkr(subtotal)]];
   if (extraCharges !== 0) {
     foot.push([...footPrefix, 'Transport + Loading + Tax − Discount', formatPkr(extraCharges)]);
@@ -3459,7 +3473,7 @@ async function buildTradeDocPdf({ invoice, items, docLabel, partyRoleLabel, refL
   autoTable(doc, {
     startY,
     head: [isFabric
-      ? ['Item', 'Unit', 'Qty', 'Rate', 'Color', 'Narration', 'Amount']
+      ? ['Item', 'Unit', 'Qty', 'Rate', 'Color', 'GSM', 'Narration', 'Amount']
       : ['Item', 'Unit', 'Qty', 'Rate', 'Narration', 'Amount']],
     body: rows,
     foot,
@@ -3683,6 +3697,7 @@ function PurchaseViewModal({ doc, onClose }) {
                 <th className="text-left px-3 py-2">Qty</th>
                 <th className="text-left px-3 py-2">Rate</th>
                 {isFabric && <th className="text-left px-3 py-2">Color</th>}
+                {isFabric && <th className="text-left px-3 py-2">GSM</th>}
                 <th className="text-left px-3 py-2">Narration</th>
                 <th className="text-left px-3 py-2">Amount</th>
                 {hasReservations && <th className="text-left px-3 py-2">Sell to</th>}
@@ -3696,6 +3711,7 @@ function PurchaseViewModal({ doc, onClose }) {
                   <td className="px-3 py-2">{it.quantity}</td>
                   <td className="px-3 py-2">{formatPkr(it.rate)}</td>
                   {isFabric && <td className="px-3 py-2 text-gray-500">{it.color || ''}</td>}
+                  {isFabric && <td className="px-3 py-2 text-gray-500">{it.gsm || ''}</td>}
                   <td className="px-3 py-2 text-gray-500">{it.narration || ''}</td>
                   <td className="px-3 py-2">{formatPkr(it.amount)}</td>
                   {hasReservations && (
@@ -3807,10 +3823,10 @@ function PurchaseOldList({ invoiceType, onEdit }) {
       const isFabric = row.category === 'fabric';
       exportExcel({
         title: row.invoice_no,
-        columns: isFabric ? ['Item', 'Unit', 'Qty', 'Rate', 'Color', 'Amount'] : ['Item', 'Unit', 'Qty', 'Rate', 'Amount'],
+        columns: isFabric ? ['Item', 'Unit', 'Qty', 'Rate', 'Color', 'GSM', 'Amount'] : ['Item', 'Unit', 'Qty', 'Rate', 'Amount'],
         rows: items.map((it) => {
           const r = [it.items?.name || it.description || '', it.unit, it.quantity, it.rate];
-          if (isFabric) r.push(it.color || '');
+          if (isFabric) r.push(it.color || '', it.gsm || '');
           r.push(it.amount);
           return r;
         }),
@@ -4025,8 +4041,8 @@ function emptySaleLine(defaultItem) {
     // reservation — records the link so that purchase line shows "Billed"
     // and stops being suggested again.
     fulfilledFromItemId: null,
-    // Optional free-text color, shown for fabric-category brands only.
-    color: '',
+    // Optional free-text color/GSM, shown for fabric-category brands only.
+    color: '', gsm: '',
   };
 }
 
@@ -4067,7 +4083,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     if (!lineRefs.current[i]) {
       lineRefs.current[i] = {
         item: React.createRef(), unit: React.createRef(), qty: React.createRef(),
-        rate: React.createRef(), color: React.createRef(), narration: React.createRef(),
+        rate: React.createRef(), color: React.createRef(), gsm: React.createRef(), narration: React.createRef(),
       };
     }
     return lineRefs.current[i];
@@ -4127,7 +4143,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
           itemId: it.item_id, itemName: it.items?.name || it.description || '',
           itemType: it.items?.item_type || 'product',
           unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
-          narration: it.narration || '', color: it.color || '',
+          narration: it.narration || '', color: it.color || '', gsm: it.gsm || '',
           fulfilledFromItemId: it.fulfilled_from_item_id || null,
         })));
         setEditInvoiceNo(invoice.invoice_no);
@@ -4266,7 +4282,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
         itemType: it.items?.item_type || 'product',
         unit: it.unit, quantity: String(it.quantity), rate: String(it.rate),
-        narration: it.narration || '', color: it.color || '',
+        narration: it.narration || '', color: it.color || '', gsm: it.gsm || '',
         fulfilledFromItemId: it.fulfilled_from_item_id || null,
       })));
     } catch (e) {
@@ -4296,7 +4312,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
-      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType, fulfilledFromItemId: l.fulfilledFromItemId, color: l.color }));
+      const itemsPayload = validLines.map((l) => ({ itemId: l.itemId, quantity: l.quantity, unit: l.unit, rate: l.rate, description: l.itemName, narration: l.narration, itemType: l.itemType, fulfilledFromItemId: l.fulfilledFromItemId, color: l.color, gsm: l.gsm }));
       if (editInvoiceId) {
         await updateInvoice(editInvoiceId, {
           partyId: customer.id, invoiceDate: date, items: itemsPayload,
@@ -4357,7 +4373,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     };
     const pseudoItems = lines.filter((l) => l.itemId).map((l) => ({
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
-      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration, color: l.color,
+      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration, color: l.color, gsm: l.gsm,
     }));
     return { pseudoInvoice, pseudoItems };
   }
@@ -4447,6 +4463,15 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
           label="Color (optional)" value={line.color}
           placeholder="e.g. Sky Blue"
           onChange={(e) => updateLine(i, { color: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).gsm.current?.focus(); } }}
+        />
+      ),
+      gsm: (
+        <Input
+          ref={getLineRefs(i).gsm}
+          label="GSM (optional)" value={line.gsm}
+          placeholder="e.g. 120"
+          onChange={(e) => updateLine(i, { gsm: e.target.value })}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).narration.current?.focus(); } }}
         />
       ),
@@ -4552,6 +4577,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
               <th className="text-left font-medium px-3 py-2.5">Qty</th>
               <th className="text-left font-medium px-3 py-2.5">Rate</th>
               {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">Color</th>}
+              {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">GSM</th>}
               <th className="text-left font-medium px-3 py-2.5 w-1/5">Narration</th>
               <th className="text-left font-medium px-3 py-2.5">Amount</th>
               <th className="px-2 py-2.5" />
@@ -4567,6 +4593,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
                   <td className="px-3 py-2 w-24">{f.qty}</td>
                   <td className="px-3 py-2 w-28">{f.rate}</td>
                   {brand.category === 'fabric' && <td className="px-3 py-2">{f.color}</td>}
+                  {brand.category === 'fabric' && <td className="px-3 py-2">{f.gsm}</td>}
                   <td className="px-3 py-2">{f.narration}</td>
                   <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
                   <td className="px-2 py-2 pt-4">
@@ -4603,6 +4630,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
                 </div>
               </div>
               {brand.category === 'fabric' && f.color}
+              {brand.category === 'fabric' && f.gsm}
               {f.narration}
             </Card>
           );
@@ -4674,6 +4702,7 @@ function SaleViewModal({ doc, onClose }) {
                 <th className="text-left px-3 py-2">Qty</th>
                 <th className="text-left px-3 py-2">Rate</th>
                 {isFabric && <th className="text-left px-3 py-2">Color</th>}
+                {isFabric && <th className="text-left px-3 py-2">GSM</th>}
                 <th className="text-left px-3 py-2">Narration</th>
                 <th className="text-left px-3 py-2">Amount</th>
               </tr>
@@ -4686,6 +4715,7 @@ function SaleViewModal({ doc, onClose }) {
                   <td className="px-3 py-2">{it.quantity}</td>
                   <td className="px-3 py-2">{formatPkr(it.rate)}</td>
                   {isFabric && <td className="px-3 py-2 text-gray-500">{it.color || ''}</td>}
+                  {isFabric && <td className="px-3 py-2 text-gray-500">{it.gsm || ''}</td>}
                   <td className="px-3 py-2 text-gray-500">{it.narration || ''}</td>
                   <td className="px-3 py-2">{formatPkr(it.amount)}</td>
                 </tr>
@@ -4759,10 +4789,10 @@ function SaleOldList({ invoiceType, onEdit }) {
       const isFabric = row.category === 'fabric';
       exportExcel({
         title: row.invoice_no,
-        columns: isFabric ? ['Item', 'Unit', 'Qty', 'Rate', 'Color', 'Amount'] : ['Item', 'Unit', 'Qty', 'Rate', 'Amount'],
+        columns: isFabric ? ['Item', 'Unit', 'Qty', 'Rate', 'Color', 'GSM', 'Amount'] : ['Item', 'Unit', 'Qty', 'Rate', 'Amount'],
         rows: items.map((it) => {
           const r = [it.items?.name || it.description || '', it.unit, it.quantity, it.rate];
-          if (isFabric) r.push(it.color || '');
+          if (isFabric) r.push(it.color || '', it.gsm || '');
           r.push(it.amount);
           return r;
         }),
