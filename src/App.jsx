@@ -174,9 +174,10 @@ async function fetchBrands() {
   return data;
 }
 
-async function fetchChartOfAccounts({ search = '' } = {}) {
+async function fetchChartOfAccounts({ search = '', types = null } = {}) {
   let q = supabase.from('chart_of_accounts').select();
   if (search) q = q.ilike('name', `%${search}%`);
+  if (types) q = q.in('type', types);
   const { data, error } = await q.order('name').limit(search ? 50 : 1000);
   if (error) throw error;
   return data;
@@ -528,23 +529,34 @@ async function voidInvoice(invoiceId, reason) {
   if (error) throw error;
 }
 
-async function recordPayment({ paymentDate, partyId, direction, amount, method, cashBankAccountId, linkedInvoiceId, notes }) {
+async function recordPayment({ paymentDate, partyId, directAccountId, direction, amount, method, cashBankAccountId, linkedInvoiceId, notes }) {
   const { data, error } = await supabase.rpc('record_payment', {
     p_payment_date: paymentDate,
-    p_party_id: partyId,
+    p_party_id: partyId || null,
     p_direction: direction,
     p_amount: Number(amount),
     p_method: method,
     p_cash_bank_account_id: cashBankAccountId,
     p_linked_invoice_id: linkedInvoiceId || null,
     p_notes: notes || null,
+    p_direct_account_id: directAccountId || null,
   });
   if (error) throw error;
   return data;
 }
 
+// payments has two FKs into chart_of_accounts (the cash/bank leg and the
+// optional direct expense/drawings leg), so the embed must name which
+// column each side follows — an unqualified chart_of_accounts(...) embed
+// is ambiguous once there's more than one relationship to the same table.
+const PAYMENT_SELECT = '*, parties(name), chart_of_accounts!cash_bank_account_id(name, cash_bank_kind), direct_account:chart_of_accounts!direct_account_id(name)';
+
+function paymentRecipientLabel(payment) {
+  return payment.parties?.name || payment.direct_account?.name || '';
+}
+
 async function fetchPayments({ direction, kind, from, to, partyId, voucherNo }) {
-  let q = supabase.from('payments').select('*, parties(name), chart_of_accounts(name, cash_bank_kind)')
+  let q = supabase.from('payments').select(PAYMENT_SELECT)
     .eq('direction', direction).gte('payment_date', from).lte('payment_date', to);
   if (partyId) q = q.eq('party_id', partyId);
   if (voucherNo) q = q.ilike('voucher_no', `%${voucherNo}%`);
@@ -554,7 +566,7 @@ async function fetchPayments({ direction, kind, from, to, partyId, voucherNo }) 
 }
 
 async function fetchPaymentById(id) {
-  const { data, error } = await supabase.from('payments').select('*, parties(name), chart_of_accounts(name, cash_bank_kind)').eq('id', id).single();
+  const { data, error } = await supabase.from('payments').select(PAYMENT_SELECT).eq('id', id).single();
   if (error) throw error;
   return data;
 }
@@ -1310,7 +1322,7 @@ function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
 // the Admin page, not created mid-entry the way parties/items are.
 // ============================================================================
 
-function AccountPicker({ value, onChange, resetKey, inputRef, onEnterNext }) {
+function AccountPicker({ value, onChange, resetKey, inputRef, onEnterNext, types = null, label = 'Account', placeholder = 'Search accounts…' }) {
   const [query, setQuery] = useState(value?.name || '');
   const [open, setOpen] = useState(false);
   const [results, setResults] = useState([]);
@@ -1325,11 +1337,11 @@ function AccountPicker({ value, onChange, resetKey, inputRef, onEnterNext }) {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    fetchChartOfAccounts({ search: query })
+    fetchChartOfAccounts({ search: query, types })
       .then((rows) => { if (alive) { setResults(rows); setHighlight(0); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [query]);
+  }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     function onDocClick(e) {
@@ -1360,8 +1372,8 @@ function AccountPicker({ value, onChange, resetKey, inputRef, onEnterNext }) {
     <div className="relative" ref={boxRef}>
       <Input
         ref={inputRef}
-        label="Account"
-        placeholder="Search accounts…"
+        label={label}
+        placeholder={placeholder}
         value={query}
         onFocus={() => setOpen(true)}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
@@ -4945,15 +4957,23 @@ function VoucherModule({ initialTab, initialMode }) {
   );
 }
 
+const PAYABLE_ACCOUNT_TYPES = ['expense', 'drawings'];
+
 function VoucherEntryForm({ tab, onSavedClose }) {
   const partyType = tab.direction === 'receipt' ? 'customer' : 'supplier';
   const invoiceType = tab.direction === 'receipt' ? 'sale' : 'purchase';
+  // Only a payment (money out) can go straight to an expense/drawings
+  // account instead of a supplier — a receipt always names a party.
+  const isPaymentDirection = tab.direction === 'payment';
 
   const [accounts, setAccounts] = useState([]);
   const [cashBankAccountId, setCashBankAccountId] = useState('');
   const [date, setDate] = useState(toDateInput(new Date()));
+  const [payMode, setPayMode] = useState('party'); // 'party' | 'account' — payment direction only
   const [party, setParty] = useState(null);
   const [partyResetKey, setPartyResetKey] = useState(0);
+  const [expenseAccount, setExpenseAccount] = useState(null);
+  const [expenseAccountResetKey, setExpenseAccountResetKey] = useState(0);
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('bank_transfer');
   const [linkedInvoiceId, setLinkedInvoiceId] = useState('');
@@ -4966,10 +4986,12 @@ function VoucherEntryForm({ tab, onSavedClose }) {
 
   const dateRef = useRef(null);
   const partyRef = useRef(null);
+  const expenseAccountRef = useRef(null);
   const amountRef = useRef(null);
   const notesRef = useRef(null);
 
-  const isDirty = !!party || !!amount.trim() || !!notes.trim();
+  const usingAccount = isPaymentDirection && payMode === 'account';
+  const isDirty = !!party || !!expenseAccount || !!amount.trim() || !!notes.trim();
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
   useEffect(() => { dateRef.current?.focus(); }, []);
@@ -4989,9 +5011,20 @@ function VoucherEntryForm({ tab, onSavedClose }) {
     return () => { alive = false; };
   }, [party, invoiceType]);
 
+  function switchPayMode(mode) {
+    if (mode === payMode) return;
+    setPayMode(mode);
+    setParty(null);
+    setPartyResetKey((k) => k + 1);
+    setExpenseAccount(null);
+    setExpenseAccountResetKey((k) => k + 1);
+  }
+
   function resetForm() {
     setParty(null);
     setPartyResetKey((k) => k + 1);
+    setExpenseAccount(null);
+    setExpenseAccountResetKey((k) => k + 1);
     setAmount('');
     setLinkedInvoiceId('');
     setNotes('');
@@ -4999,13 +5032,20 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   }
 
   async function save(closeAfter) {
-    if (!party) { show('Pick a party.', 'danger'); return; }
+    if (usingAccount) {
+      if (!expenseAccount) { show('Pick an expense or drawings account.', 'danger'); return; }
+    } else if (!party) {
+      show('Pick a party.', 'danger'); return;
+    }
     if (!cashBankAccountId) { show(`No ${tab.kind} account is set up yet — add one under Admin.`, 'danger'); return; }
     if (!Number(amount) || Number(amount) <= 0) { show('Enter a valid amount.', 'danger'); return; }
     setSaving(true);
     try {
       const id = await recordPayment({
-        paymentDate: date, partyId: party.id, direction: tab.direction, amount,
+        paymentDate: date,
+        partyId: usingAccount ? undefined : party.id,
+        directAccountId: usingAccount ? expenseAccount.id : undefined,
+        direction: tab.direction, amount,
         method: tab.kind === 'cash' ? 'cash' : method, cashBankAccountId,
         linkedInvoiceId: linkedInvoiceId || undefined, notes,
       });
@@ -5025,7 +5065,9 @@ function VoucherEntryForm({ tab, onSavedClose }) {
     return {
       voucher_no: savedNo || 'DRAFT', payment_date: date, direction: tab.direction,
       amount, method: tab.kind === 'cash' ? 'cash' : method, notes,
-      parties: { name: party?.name }, chart_of_accounts: { name: accounts.find((a) => a.id === cashBankAccountId)?.name },
+      parties: usingAccount ? null : { name: party?.name },
+      direct_account: usingAccount ? { name: expenseAccount?.name } : null,
+      chart_of_accounts: { name: accounts.find((a) => a.id === cashBankAccountId)?.name },
     };
   }
   async function draftPrint() {
@@ -5052,14 +5094,38 @@ function VoucherEntryForm({ tab, onSavedClose }) {
         <Input
           ref={dateRef} type="date" label="Date" value={date}
           onChange={(e) => setDate(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); partyRef.current?.focus(); } }}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (usingAccount ? expenseAccountRef : partyRef).current?.focus(); } }}
         />
 
-        <PartyPicker
-          type={partyType} value={party} onChange={setParty}
-          resetKey={partyResetKey} inputRef={partyRef} label="Party"
-          onEnterNext={() => amountRef.current?.focus()}
-        />
+        {isPaymentDirection && (
+          <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+            {[{ k: 'party', l: 'Supplier' }, { k: 'account', l: 'Expense / Drawings' }].map((o) => (
+              <button
+                key={o.k} type="button"
+                onClick={() => switchPayMode(o.k)}
+                className="px-3 py-1.5 rounded-md text-sm font-medium"
+                style={payMode === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+              >
+                {o.l}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {usingAccount ? (
+          <AccountPicker
+            types={PAYABLE_ACCOUNT_TYPES} value={expenseAccount} onChange={setExpenseAccount}
+            resetKey={expenseAccountResetKey} inputRef={expenseAccountRef}
+            label="Expense / Drawings account" placeholder="Search expense or drawings accounts…"
+            onEnterNext={() => amountRef.current?.focus()}
+          />
+        ) : (
+          <PartyPicker
+            type={partyType} value={party} onChange={setParty}
+            resetKey={partyResetKey} inputRef={partyRef} label="Party"
+            onEnterNext={() => amountRef.current?.focus()}
+          />
+        )}
 
         {accounts.length > 1 && (
           <Select label={`${tab.kind === 'cash' ? 'Cash' : 'Bank'} account`} value={cashBankAccountId} onChange={(e) => setCashBankAccountId(e.target.value)}>
@@ -5105,7 +5171,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
           {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
         </div>
         <p className="text-xs text-gray-500">
-          Enter moves Date → Party → Amount → Notes. Ctrl+S saves, Ctrl+P prints the draft.
+          Enter moves Date → {usingAccount ? 'Account' : 'Party'} → Amount → Notes. Ctrl+S saves, Ctrl+P prints the draft.
         </p>
       </div>
       <SimpleReportModal
@@ -5113,9 +5179,9 @@ function VoucherEntryForm({ tab, onSavedClose }) {
         title={voucherTitle(buildDraftPayment())}
         buildPdfDoc={() => buildVoucherPdf(buildDraftPayment())}
         excelData={{
-          columns: ['Voucher No.', 'Date', 'Party', 'Account', 'Method', 'Narration', 'Amount'],
+          columns: ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Narration', 'Amount'],
           rows: [[
-            savedNo || 'DRAFT', formatDate(date), party?.name || '',
+            savedNo || 'DRAFT', formatDate(date), usingAccount ? (expenseAccount?.name || '') : (party?.name || ''),
             accounts.find((a) => a.id === cashBankAccountId)?.name || '',
             tab.kind === 'cash' ? 'cash' : method, notes, Number(amount) || 0,
           ]],
@@ -5150,13 +5216,13 @@ async function buildVoucherPdf(payment) {
   doc.setFontSize(10);
   doc.setTextColor(120);
   doc.text(`Voucher No: ${payment.voucher_no}`, textX, 23);
-  doc.text(`Date: ${formatDate(payment.payment_date)}   Party: ${payment.parties?.name || ''}`, textX, 29);
+  doc.text(`Date: ${formatDate(payment.payment_date)}   ${payment.direction === 'receipt' ? 'Received from' : 'Paid to'}: ${paymentRecipientLabel(payment)}`, textX, 29);
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
 
   autoTable(doc, {
     startY: 36,
     head: [[payment.direction === 'receipt' ? 'Received from' : 'Paid to', 'Account', 'Method', 'Narration', 'Amount']],
-    body: [[payment.parties?.name || '', payment.chart_of_accounts?.name || '', payment.method || '', payment.notes || '', formatPkr(payment.amount)]],
+    body: [[paymentRecipientLabel(payment), payment.chart_of_accounts?.name || '', payment.method || '', payment.notes || '', formatPkr(payment.amount)]],
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
     didDrawPage: () => drawPdfFooter(doc),
@@ -5171,7 +5237,7 @@ function VoucherViewModal({ payment, onClose }) {
       <div className="space-y-3 text-sm">
         <div className="grid grid-cols-2 gap-2">
           <div><span className="text-gray-500">Date:</span> {formatDate(payment.payment_date)}</div>
-          <div><span className="text-gray-500">Party:</span> {payment.parties?.name}</div>
+          <div><span className="text-gray-500">{payment.direction === 'receipt' ? 'Received from' : 'Paid to'}:</span> {paymentRecipientLabel(payment)}</div>
           <div><span className="text-gray-500">Account:</span> {payment.chart_of_accounts?.name}</div>
           <div><span className="text-gray-500">Method:</span> {payment.method}</div>
           <div><span className="text-gray-500">Status:</span> <Badge tone={payment.status === 'voided' ? 'danger' : 'success'}>{payment.status}</Badge></div>
@@ -5212,8 +5278,8 @@ function VoucherOldList({ tab }) {
   function handleExportExcel(row) {
     exportExcel({
       title: row.voucher_no,
-      columns: ['Date', 'Party', 'Account', 'Method', 'Amount'],
-      rows: [[formatDate(row.payment_date), row.parties?.name || '', row.chart_of_accounts?.name || '', row.method || '', row.amount]],
+      columns: ['Date', 'Paid to / Received from', 'Account', 'Method', 'Amount'],
+      rows: [[formatDate(row.payment_date), paymentRecipientLabel(row), row.chart_of_accounts?.name || '', row.method || '', row.amount]],
     });
   }
   async function handleVoidConfirm(reason) {
@@ -5257,7 +5323,7 @@ function VoucherOldList({ tab }) {
                   {row.voucher_no}
                   {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
                 </div>
-                <div className="text-xs text-gray-500">{formatDate(row.payment_date)} · {row.parties?.name}</div>
+                <div className="text-xs text-gray-500">{formatDate(row.payment_date)} · {paymentRecipientLabel(row)}</div>
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.amount)}</div>
               <div className="flex items-center gap-1">
@@ -5291,8 +5357,8 @@ function VoucherOldList({ tab }) {
         title={reportRow ? voucherTitle(reportRow) : ''}
         buildPdfDoc={() => buildVoucherPdf(reportRow)}
         excelData={reportRow ? {
-          columns: ['Voucher No.', 'Date', 'Party', 'Account', 'Method', 'Narration', 'Amount'],
-          rows: [[reportRow.voucher_no, formatDate(reportRow.payment_date), reportRow.parties?.name || '', reportRow.chart_of_accounts?.name || '', reportRow.method || '', reportRow.notes || '', reportRow.amount]],
+          columns: ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Narration', 'Amount'],
+          rows: [[reportRow.voucher_no, formatDate(reportRow.payment_date), paymentRecipientLabel(reportRow), reportRow.chart_of_accounts?.name || '', reportRow.method || '', reportRow.notes || '', reportRow.amount]],
         } : null}
       />
 
