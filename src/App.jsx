@@ -1227,7 +1227,6 @@ function ItemPicker({ category, value, onChange, resetKey, inputRef, onEnterNext
 
 const FABRIC_GROUPS = [
   { key: 'in_house', label: 'In House' },
-  { key: 'knitting_dying', label: 'Knitting + Dying' },
 ];
 
 function AddItemModal({ open, onClose, category, prefillName, onCreated }) {
