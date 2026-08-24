@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, createContext, useContext } from 'react';
 import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
-  LogOut, Search, Plus, X, Calendar, ChevronRight, FileDown, FileSpreadsheet,
+  LogOut, Search, Plus, X, Calendar, ChevronRight, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
-  BookOpen, Home, Package, Eye, EyeOff, Pencil,
+  BookOpen, Home, Package, Eye, EyeOff, Pencil, Printer, FileText, Image, Share2,
 } from 'lucide-react';
 import { supabase } from './supabaseClient.js';
 import logoSkfPolytex from './assets/logo-skf-polytex.png';
@@ -38,7 +38,7 @@ function loadPdfJs() {
   return _pdfjsPromise;
 }
 
-async function pdfDocToPngDataUrl(doc, scale = 2.5) {
+async function pdfDocToImageDataUrl(doc, { scale = 2.5, format = 'jpeg', quality = 0.92 } = {}) {
   const pdfjsLib = await loadPdfJs();
   const pdf = await pdfjsLib.getDocument({ data: doc.output('arraybuffer') }).promise;
   const page = await pdf.getPage(1);
@@ -50,7 +50,38 @@ async function pdfDocToPngDataUrl(doc, scale = 2.5) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvasContext: ctx, viewport }).promise;
-  return canvas.toDataURL('image/png');
+  return format === 'png' ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', quality);
+}
+
+// Shared "download a high-quality picture" action for every Sale/Purchase
+// document and voucher — rasterizes the same generated PDF Print/Export use
+// (never a screenshot) to a JPG. On mobile, prefers the native share sheet
+// so "Save to Photos/Gallery" is one tap away; falls back to a plain
+// download link on desktop or wherever Web Share isn't available.
+async function downloadPdfAsImage(buildDoc, filenameBase, show) {
+  try {
+    const doc = await buildDoc();
+    const dataUrl = await pdfDocToImageDataUrl(doc, { format: 'jpeg' });
+    if (navigator.canShare) {
+      try {
+        const blob = await (await fetch(dataUrl)).blob();
+        const file = new File([blob], `${filenameBase}.jpg`, { type: 'image/jpeg' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: filenameBase });
+          return;
+        }
+      } catch (e) {
+        if (e?.name === 'AbortError') return; // user cancelled the share sheet
+        // any other share failure falls through to a plain download below
+      }
+    }
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${filenameBase}.jpg`;
+    a.click();
+  } catch (e) {
+    show?.(`Could not generate image: ${e.message}`, 'danger');
+  }
 }
 
 const BRAND_LOGOS = { skf_polytex: logoSkfPolytex, skf_polybags: logoSkfPolybags };
@@ -1576,7 +1607,7 @@ function ReportTable({ title, brandLabel, brandLogo, columns, rows, totalsRow })
         <div className="flex gap-2">
           <Button
             variant="outline"
-            icon={FileDown}
+            icon={Printer}
             disabled={rows.length === 0}
             onClick={() => printReportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow })}
           >
@@ -1584,7 +1615,7 @@ function ReportTable({ title, brandLabel, brandLogo, columns, rows, totalsRow })
           </Button>
           <Button
             variant="outline"
-            icon={FileDown}
+            icon={FileText}
             disabled={rows.length === 0}
             onClick={() => exportPdf({ title, brandLabel, brandLogo, columns, rows, totalsRow })}
           >
@@ -2099,7 +2130,7 @@ function AccountLedgerBody({ account, from, to }) {
   return (
     <div className="space-y-3">
       <div className="flex justify-end">
-        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)} disabled={rows.length === 0 && !data.openingBalance}>
+        <Button variant="outline" icon={Eye} onClick={() => setShowReport(true)} disabled={rows.length === 0 && !data.openingBalance}>
           Report
         </Button>
       </div>
@@ -2862,6 +2893,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [savingImage, setSavingImage] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(!!editInvoiceId);
   const [editInvoiceNo, setEditInvoiceNo] = useState(null);
   const { show, ToastHost } = useToast();
@@ -3136,6 +3168,15 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     const { pseudoInvoice, pseudoItems } = buildDraft();
     (await buildPurchaseDocPdf(pseudoInvoice, pseudoItems)).save(`${pseudoInvoice.invoice_no}.pdf`);
   }
+  async function draftSaveImage() {
+    setSavingImage(true);
+    try {
+      const { pseudoInvoice, pseudoItems } = buildDraft();
+      await downloadPdfAsImage(() => buildPurchaseDocPdf(pseudoInvoice, pseudoItems), pseudoInvoice.invoice_no, show);
+    } finally {
+      setSavingImage(false);
+    }
+  }
 
   useEffect(() => {
     function onKey(e) {
@@ -3379,9 +3420,10 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
             <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
           </>
         )}
-        <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
-        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
-        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
+        <Button variant="outline" icon={Printer} onClick={draftPrint}>Print</Button>
+        <Button variant="outline" icon={FileText} onClick={draftExportPdf}>Export</Button>
+        <Button variant="outline" icon={Image} loading={savingImage} onClick={draftSaveImage}>Image</Button>
+        <Button variant="outline" icon={Eye} onClick={() => setShowReport(true)}>Report</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
@@ -3572,18 +3614,14 @@ function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rasterizes the same generated report the Print/Export buttons use (via
-  // pdf.js), never a screenshot of the live ERP screen.
+  // pdf.js), never a screenshot of the live ERP screen. On mobile this goes
+  // through the native share sheet first, so "Save to Photos/Gallery" is
+  // one tap away.
   async function handleSaveImage() {
     if (!docRef) return;
     setSavingImage(true);
     try {
-      const dataUrl = await pdfDocToPngDataUrl(docRef);
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = `${slug(title)}.png`;
-      a.click();
-    } catch (e) {
-      show(`Could not generate image: ${e.message}`, 'danger');
+      await downloadPdfAsImage(() => docRef, slug(title), show);
     } finally {
       setSavingImage(false);
     }
@@ -3596,9 +3634,9 @@ function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
       // renders an inline preview in WhatsApp/etc, rather than a bare
       // document icon. Falls back to the PDF if image generation fails.
       try {
-        const dataUrl = await pdfDocToPngDataUrl(docRef);
+        const dataUrl = await pdfDocToImageDataUrl(docRef, { format: 'jpeg' });
         const imgBlob = await (await fetch(dataUrl)).blob();
-        const imgFile = new File([imgBlob], `${slug(title)}.png`, { type: 'image/png' });
+        const imgFile = new File([imgBlob], `${slug(title)}.jpg`, { type: 'image/jpeg' });
         if (navigator.canShare && navigator.canShare({ files: [imgFile] })) {
           await navigator.share({ files: [imgFile], title });
           return;
@@ -3631,13 +3669,13 @@ function SimpleReportModal({ open, onClose, title, buildPdfDoc, excelData }) {
               slot the browser's PDF viewer has to squeeze the page into. */}
           <iframe title="report-preview" src={previewUrl} className="w-full rounded-lg border" style={{ aspectRatio: '210 / 297', borderColor: THEME.line }} />
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" icon={FileDown} onClick={() => printPdfDoc(docRef)}>Print</Button>
-            <Button variant="outline" icon={FileDown} loading={savingImage} onClick={handleSaveImage}>Save Image</Button>
-            <Button variant="outline" icon={FileDown} onClick={() => docRef.save(`${slug(title)}.pdf`)}>Export PDF</Button>
+            <Button variant="outline" icon={Printer} onClick={() => printPdfDoc(docRef)}>Print</Button>
+            <Button variant="outline" icon={Image} loading={savingImage} onClick={handleSaveImage}>Save Image (JPG)</Button>
+            <Button variant="outline" icon={FileText} onClick={() => docRef.save(`${slug(title)}.pdf`)}>Export PDF</Button>
             {excelData && (
               <Button variant="outline" icon={FileSpreadsheet} onClick={() => exportExcel({ title, columns: excelData.columns, rows: excelData.rows })}>Export Excel</Button>
             )}
-            <Button icon={FileDown} onClick={handleShare}>Share</Button>
+            <Button icon={Share2} onClick={handleShare}>Share</Button>
           </div>
         </div>
       ) : null}
@@ -3771,6 +3809,7 @@ function PurchaseOldList({ invoiceType, onEdit }) {
   const [voidTarget, setVoidTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [reservationInfo, setReservationInfo] = useState({});
+  const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
 
   useEffect(() => {
@@ -3827,6 +3866,15 @@ function PurchaseOldList({ invoiceType, onEdit }) {
   async function handleExportPdf(row) {
     try { const { invoice, items } = await fetchInvoiceWithItems(row.id); (await buildPurchaseDocPdf(invoice, items)).save(`${invoice.invoice_no}.pdf`); }
     catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
+  }
+  async function handleSaveImage(row) {
+    setSavingImageId(row.id);
+    try {
+      const { invoice, items } = await fetchInvoiceWithItems(row.id);
+      await downloadPdfAsImage(() => buildPurchaseDocPdf(invoice, items), invoice.invoice_no, show);
+    } finally {
+      setSavingImageId(null);
+    }
   }
   async function handleExportExcel(row) {
     try {
@@ -3913,10 +3961,13 @@ function PurchaseOldList({ invoiceType, onEdit }) {
                   </button>
                 )}
                 <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <Printer size={16} />
                 </button>
                 <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <FileText size={16} />
+                </button>
+                <button onClick={() => handleSaveImage(row)} title="Save as Image (JPG)" aria-label="Save as Image (JPG)" disabled={savingImageId === row.id} className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500 disabled:opacity-50">
+                  <Image size={16} />
                 </button>
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
@@ -4071,6 +4122,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [savingImage, setSavingImage] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(!!editInvoiceId);
   const [editInvoiceNo, setEditInvoiceNo] = useState(null);
   const { show, ToastHost } = useToast();
@@ -4396,6 +4448,15 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     const { pseudoInvoice, pseudoItems } = buildDraft();
     (await buildSaleDocPdf(pseudoInvoice, pseudoItems)).save(`${pseudoInvoice.invoice_no}.pdf`);
   }
+  async function draftSaveImage() {
+    setSavingImage(true);
+    try {
+      const { pseudoInvoice, pseudoItems } = buildDraft();
+      await downloadPdfAsImage(() => buildSaleDocPdf(pseudoInvoice, pseudoItems), pseudoInvoice.invoice_no, show);
+    } finally {
+      setSavingImage(false);
+    }
+  }
 
   useEffect(() => {
     function onKey(e) {
@@ -4662,9 +4723,10 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
             <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
           </>
         )}
-        <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
-        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
-        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
+        <Button variant="outline" icon={Printer} onClick={draftPrint}>Print</Button>
+        <Button variant="outline" icon={FileText} onClick={draftExportPdf}>Export</Button>
+        <Button variant="outline" icon={Image} loading={savingImage} onClick={draftSaveImage}>Image</Button>
+        <Button variant="outline" icon={Eye} onClick={() => setShowReport(true)}>Report</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
@@ -4761,6 +4823,7 @@ function SaleOldList({ invoiceType, onEdit }) {
   const [viewDoc, setViewDoc] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
 
   useEffect(() => {
@@ -4793,6 +4856,15 @@ function SaleOldList({ invoiceType, onEdit }) {
   async function handleExportPdf(row) {
     try { const { invoice, items } = await fetchInvoiceWithItems(row.id); (await buildSaleDocPdf(invoice, items)).save(`${invoice.invoice_no}.pdf`); }
     catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
+  }
+  async function handleSaveImage(row) {
+    setSavingImageId(row.id);
+    try {
+      const { invoice, items } = await fetchInvoiceWithItems(row.id);
+      await downloadPdfAsImage(() => buildSaleDocPdf(invoice, items), invoice.invoice_no, show);
+    } finally {
+      setSavingImageId(null);
+    }
   }
   async function handleExportExcel(row) {
     try {
@@ -4872,10 +4944,13 @@ function SaleOldList({ invoiceType, onEdit }) {
                   </button>
                 )}
                 <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <Printer size={16} />
                 </button>
                 <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <FileText size={16} />
+                </button>
+                <button onClick={() => handleSaveImage(row)} title="Save as Image (JPG)" aria-label="Save as Image (JPG)" disabled={savingImageId === row.id} className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500 disabled:opacity-50">
+                  <Image size={16} />
                 </button>
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
@@ -4981,6 +5056,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [savingImage, setSavingImage] = useState(false);
   const { show, ToastHost } = useToast();
 
   const dateRef = useRef(null);
@@ -5075,6 +5151,14 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   async function draftExportPdf() {
     (await buildVoucherPdf(buildDraftPayment())).save(`${savedNo || 'voucher'}.pdf`);
   }
+  async function draftSaveImage() {
+    setSavingImage(true);
+    try {
+      await downloadPdfAsImage(() => buildVoucherPdf(buildDraftPayment()), savedNo || 'voucher', show);
+    } finally {
+      setSavingImage(false);
+    }
+  }
 
   useEffect(() => {
     function onKey(e) {
@@ -5164,9 +5248,10 @@ function VoucherEntryForm({ tab, onSavedClose }) {
         <div className="flex flex-wrap items-center gap-2 pt-2">
           <Button onClick={() => save(false)} loading={saving}>Save</Button>
           <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
-          <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
-          <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
-          <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
+          <Button variant="outline" icon={Printer} onClick={draftPrint}>Print</Button>
+          <Button variant="outline" icon={FileText} onClick={draftExportPdf}>Export</Button>
+          <Button variant="outline" icon={Image} loading={savingImage} onClick={draftSaveImage}>Image</Button>
+          <Button variant="outline" icon={Eye} onClick={() => setShowReport(true)}>Report</Button>
           {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
         </div>
         <p className="text-xs text-gray-500">
@@ -5262,6 +5347,7 @@ function VoucherOldList({ tab }) {
   const [reportRow, setReportRow] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
 
   useEffect(() => {
@@ -5274,6 +5360,14 @@ function VoucherOldList({ tab }) {
 
   async function handlePrint(row) { printPdfDoc(await buildVoucherPdf(row)); }
   async function handleExportPdf(row) { (await buildVoucherPdf(row)).save(`${row.voucher_no}.pdf`); }
+  async function handleSaveImage(row) {
+    setSavingImageId(row.id);
+    try {
+      await downloadPdfAsImage(() => buildVoucherPdf(row), row.voucher_no, show);
+    } finally {
+      setSavingImageId(null);
+    }
+  }
   function handleExportExcel(row) {
     exportExcel({
       title: row.voucher_no,
@@ -5330,16 +5424,19 @@ function VoucherOldList({ tab }) {
                   <Search size={16} />
                 </button>
                 <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <Printer size={16} />
                 </button>
                 <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <FileText size={16} />
+                </button>
+                <button onClick={() => handleSaveImage(row)} title="Save as Image (JPG)" aria-label="Save as Image (JPG)" disabled={savingImageId === row.id} className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500 disabled:opacity-50">
+                  <Image size={16} />
                 </button>
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
                 <button onClick={() => setReportRow(row)} title="Report" aria-label="Report" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <Eye size={16} />
                 </button>
                 {canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
@@ -5414,6 +5511,7 @@ function JournalVoucherEntryForm({ onSavedClose }) {
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [savingImage, setSavingImage] = useState(false);
   const { show, ToastHost } = useToast();
 
   const dateRef = useRef(null);
@@ -5493,6 +5591,15 @@ function JournalVoucherEntryForm({ onSavedClose }) {
   async function draftExportPdf() {
     const { pseudoVoucher, pseudoLines } = buildDraftJv();
     (await buildJvPdf(pseudoVoucher, pseudoLines)).save(`${pseudoVoucher.voucher_no}.pdf`);
+  }
+  async function draftSaveImage() {
+    setSavingImage(true);
+    try {
+      const { pseudoVoucher, pseudoLines } = buildDraftJv();
+      await downloadPdfAsImage(() => buildJvPdf(pseudoVoucher, pseudoLines), pseudoVoucher.voucher_no, show);
+    } finally {
+      setSavingImage(false);
+    }
   }
 
   useEffect(() => {
@@ -5593,9 +5700,10 @@ function JournalVoucherEntryForm({ onSavedClose }) {
       <div className="flex flex-wrap items-center gap-2 mt-3">
         <Button onClick={() => save(false)} loading={saving} disabled={!balanced}>Save</Button>
         <Button variant="outline" onClick={() => save(true)} loading={saving} disabled={!balanced}>Save &amp; Close</Button>
-        <Button variant="outline" icon={FileDown} onClick={draftPrint}>Print</Button>
-        <Button variant="outline" icon={FileDown} onClick={draftExportPdf}>Export</Button>
-        <Button variant="outline" icon={FileDown} onClick={() => setShowReport(true)}>Report</Button>
+        <Button variant="outline" icon={Printer} onClick={draftPrint}>Print</Button>
+        <Button variant="outline" icon={FileText} onClick={draftExportPdf}>Export</Button>
+        <Button variant="outline" icon={Image} loading={savingImage} onClick={draftSaveImage}>Image</Button>
+        <Button variant="outline" icon={Eye} onClick={() => setShowReport(true)}>Report</Button>
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
@@ -5702,6 +5810,7 @@ function JournalVoucherOldList() {
   const [reportDoc, setReportDoc] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
 
   useEffect(() => {
@@ -5726,6 +5835,15 @@ function JournalVoucherOldList() {
   async function handleExportPdf(row) {
     try { const { voucher, lines } = await fetchJournalVoucherWithLines(row.id); (await buildJvPdf(voucher, lines)).save(`${voucher.voucher_no}.pdf`); }
     catch (e) { show(`Could not export: ${e.message}`, 'danger'); }
+  }
+  async function handleSaveImage(row) {
+    setSavingImageId(row.id);
+    try {
+      const { voucher, lines } = await fetchJournalVoucherWithLines(row.id);
+      await downloadPdfAsImage(() => buildJvPdf(voucher, lines), voucher.voucher_no, show);
+    } finally {
+      setSavingImageId(null);
+    }
   }
   async function handleExportExcel(row) {
     try {
@@ -5779,16 +5897,19 @@ function JournalVoucherOldList() {
                   <Search size={16} />
                 </button>
                 <button onClick={() => handlePrint(row)} title="Print" aria-label="Print" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <Printer size={16} />
                 </button>
                 <button onClick={() => handleExportPdf(row)} title="Export PDF" aria-label="Export PDF" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <FileText size={16} />
+                </button>
+                <button onClick={() => handleSaveImage(row)} title="Save as Image (JPG)" aria-label="Save as Image (JPG)" disabled={savingImageId === row.id} className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500 disabled:opacity-50">
+                  <Image size={16} />
                 </button>
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
                 <button onClick={() => handleReport(row)} title="Report" aria-label="Report" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
-                  <FileDown size={16} />
+                  <Eye size={16} />
                 </button>
                 {canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
