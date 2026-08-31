@@ -3,7 +3,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, ClipboardList, BarChart3, Users, Settings,
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
-  BookOpen, Home, Package, Eye, EyeOff, Pencil, Printer, FileText, Image, Share2,
+  BookOpen, Home, Package, Eye, EyeOff, Pencil, Printer, FileText, Image, Share2, Trash2,
 } from 'lucide-react';
 import { supabase } from './supabaseClient.js';
 import logoSkfPolytex from './assets/logo-skf-polytex.png';
@@ -554,6 +554,11 @@ async function voidInvoice(invoiceId, reason) {
   if (error) throw error;
 }
 
+async function deleteInvoice(invoiceId) {
+  const { error } = await supabase.rpc('delete_invoice', { p_invoice_id: invoiceId });
+  if (error) throw error;
+}
+
 async function recordPayment({ paymentDate, partyId, directAccountId, direction, amount, method, cashBankAccountId, linkedInvoiceId, notes }) {
   const { data, error } = await supabase.rpc('record_payment', {
     p_payment_date: paymentDate,
@@ -601,6 +606,11 @@ async function voidPayment(paymentId, reason) {
   if (error) throw error;
 }
 
+async function deletePayment(paymentId) {
+  const { error } = await supabase.rpc('delete_payment', { p_payment_id: paymentId });
+  if (error) throw error;
+}
+
 async function createJournalVoucher({ voucherDate, narration, lines }) {
   const { data, error } = await supabase.rpc('create_journal_voucher', {
     p_voucher_date: voucherDate,
@@ -618,6 +628,11 @@ async function createJournalVoucher({ voucherDate, narration, lines }) {
 
 async function voidJournalVoucher(voucherId, reason) {
   const { error } = await supabase.rpc('void_journal_voucher', { p_voucher_id: voucherId, p_reason: reason });
+  if (error) throw error;
+}
+
+async function deleteJournalVoucher(voucherId) {
+  const { error } = await supabase.rpc('delete_journal_voucher', { p_voucher_id: voucherId });
   if (error) throw error;
 }
 
@@ -3708,6 +3723,31 @@ function VoidReasonModal({ target, onClose, onConfirm }) {
   );
 }
 
+function DeleteConfirmModal({ target, onClose, onConfirm }) {
+  const [busy, setBusy] = useState(false);
+
+  async function confirm() {
+    setBusy(true);
+    try { await onConfirm(); } finally { setBusy(false); }
+  }
+
+  const docNo = target?.invoice_no || target?.voucher_no || '';
+
+  return (
+    <Modal open={!!target} onClose={onClose} title={`Delete ${docNo}`}>
+      <div className="space-y-3">
+        <p className="text-sm text-gray-500">
+          This permanently removes this voided document and its reversal entries. It cannot be undone.
+        </p>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="danger" onClick={confirm} loading={busy}>Delete permanently</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function PurchaseViewModal({ doc, onClose }) {
   const [fulfilledSet, setFulfilledSet] = useState(new Set());
   const hasReservations = doc?.items?.some((it) => it.reserved_for_party_id);
@@ -3801,6 +3841,7 @@ function PurchaseOldList({ invoiceType, onEdit }) {
   const [orderLookup, setOrderLookup] = useState({});
   const [viewDoc, setViewDoc] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [reservationInfo, setReservationInfo] = useState({});
   const [savingImageId, setSavingImageId] = useState(null);
@@ -3896,6 +3937,16 @@ function PurchaseOldList({ invoiceType, onEdit }) {
       show(`Could not void: ${e.message}`, 'danger');
     }
   }
+  async function handleDeleteConfirm() {
+    try {
+      await deleteInvoice(deleteTarget.id);
+      show(`${deleteTarget.invoice_no} deleted.`);
+      setDeleteTarget(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      show(`Could not delete: ${e.message}`, 'danger');
+    }
+  }
 
   return (
     <div>
@@ -3971,6 +4022,11 @@ function PurchaseOldList({ invoiceType, onEdit }) {
                     <X size={16} />
                   </button>
                 )}
+                {canApprove && row.status === 'voided' && (
+                  <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -3979,6 +4035,7 @@ function PurchaseOldList({ invoiceType, onEdit }) {
 
       <PurchaseViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
+      <DeleteConfirmModal target={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={handleDeleteConfirm} />
       <ToastHost />
     </div>
   );
@@ -4780,6 +4837,7 @@ function SaleOldList({ invoiceType, onEdit }) {
   const [orderLookup, setOrderLookup] = useState({});
   const [viewDoc, setViewDoc] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
@@ -4850,6 +4908,16 @@ function SaleOldList({ invoiceType, onEdit }) {
       show(`Could not void: ${e.message}`, 'danger');
     }
   }
+  async function handleDeleteConfirm() {
+    try {
+      await deleteInvoice(deleteTarget.id);
+      show(`${deleteTarget.invoice_no} deleted.`);
+      setDeleteTarget(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      show(`Could not delete: ${e.message}`, 'danger');
+    }
+  }
 
   return (
     <div>
@@ -4918,6 +4986,11 @@ function SaleOldList({ invoiceType, onEdit }) {
                     <X size={16} />
                   </button>
                 )}
+                {canApprove && row.status === 'voided' && (
+                  <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -4926,6 +4999,7 @@ function SaleOldList({ invoiceType, onEdit }) {
 
       <SaleViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
+      <DeleteConfirmModal target={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={handleDeleteConfirm} />
       <ToastHost />
     </div>
   );
@@ -5304,6 +5378,7 @@ function VoucherOldList({ tab }) {
   const [viewPayment, setViewPayment] = useState(null);
   const [reportRow, setReportRow] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
@@ -5341,6 +5416,16 @@ function VoucherOldList({ tab }) {
       setRefreshKey((k) => k + 1);
     } catch (e) {
       show(`Could not void: ${e.message}`, 'danger');
+    }
+  }
+  async function handleDeleteConfirm() {
+    try {
+      await deletePayment(deleteTarget.id);
+      show(`${deleteTarget.voucher_no} deleted.`);
+      setDeleteTarget(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      show(`Could not delete: ${e.message}`, 'danger');
     }
   }
 
@@ -5401,6 +5486,11 @@ function VoucherOldList({ tab }) {
                     <X size={16} />
                   </button>
                 )}
+                {canApprove && row.status === 'voided' && (
+                  <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -5418,6 +5508,7 @@ function VoucherOldList({ tab }) {
 
       <VoucherViewModal payment={viewPayment} onClose={() => setViewPayment(null)} />
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
+      <DeleteConfirmModal target={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={handleDeleteConfirm} />
       <ToastHost />
     </div>
   );
@@ -5767,6 +5858,7 @@ function JournalVoucherOldList() {
   const [viewDoc, setViewDoc] = useState(null);
   const [reportDoc, setReportDoc] = useState(null);
   const [voidTarget, setVoidTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
@@ -5823,6 +5915,16 @@ function JournalVoucherOldList() {
       show(`Could not void: ${e.message}`, 'danger');
     }
   }
+  async function handleDeleteConfirm() {
+    try {
+      await deleteJournalVoucher(deleteTarget.id);
+      show(`${deleteTarget.voucher_no} deleted.`);
+      setDeleteTarget(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      show(`Could not delete: ${e.message}`, 'danger');
+    }
+  }
 
   return (
     <div>
@@ -5874,6 +5976,11 @@ function JournalVoucherOldList() {
                     <X size={16} />
                   </button>
                 )}
+                {canApprove && row.status === 'voided' && (
+                  <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -5891,6 +5998,7 @@ function JournalVoucherOldList() {
         } : null}
       />
       <VoidReasonModal target={voidTarget} onClose={() => setVoidTarget(null)} onConfirm={handleVoidConfirm} />
+      <DeleteConfirmModal target={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={handleDeleteConfirm} />
       <ToastHost />
     </div>
   );
