@@ -273,6 +273,23 @@ async function fetchUnpostedDocuments() {
   return data || [];
 }
 
+async function fetchDocumentAuditLog({ action, brandKey, from, to } = {}) {
+  let q = supabase.from('document_audit_log').select()
+    .gte('performed_at', `${from}T00:00:00`).lte('performed_at', `${to}T23:59:59`);
+  if (action && action !== 'all') q = q.eq('action', action);
+  if (brandKey && brandKey !== 'all') q = q.eq('brand_key', brandKey);
+  const { data, error } = await q.order('performed_at', { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+const DOC_TYPE_LABELS = {
+  purchase_order: 'Purchase Order', purchase: 'Purchase Bill', purchase_return: 'Purchase Return',
+  sale_order: 'Sale Order', sale: 'Sale Bill', sale_return: 'Sale Return',
+  crv: 'Cash Receipt (CRV)', brv: 'Bank Receipt (BRV)', cpv: 'Cash Payment (CPV)', bpv: 'Bank Payment (BPV)',
+  jv: 'Journal Voucher',
+};
+
 async function fetchItems({ search = '', category = null } = {}) {
   let q = supabase.from('items').select().eq('active', true);
   if (search) q = q.ilike('name', `%${search}%`);
@@ -6617,6 +6634,7 @@ function TrialBalanceReport() {
 const ADMIN_TABS = [
   { key: 'profile', label: 'Profile & Alerts' },
   { key: 'users', label: 'Users' },
+  { key: 'vouchers', label: 'Vouchers' },
   { key: 'audit', label: 'Voucher Audit' },
 ];
 
@@ -6661,7 +6679,184 @@ function SettingsScreen() {
       )}
 
       {tab === 'users' && profile?.is_admin && <PermissionsScreen />}
+      {tab === 'vouchers' && profile?.is_admin && <DocumentAuditLogTab />}
       {tab === 'audit' && profile?.is_admin && <VoucherAuditTab />}
+    </div>
+  );
+}
+
+function DocumentAuditDetailModal({ row, onClose }) {
+  if (!row) return null;
+  const isInvoice = row.doc_family === 'invoice';
+  const isPayment = row.doc_family === 'payment';
+  const isJv = row.doc_family === 'journal_voucher';
+  const snap = row.snapshot || {};
+
+  return (
+    <Modal open={!!row} onClose={onClose} title={`${DOC_TYPE_LABELS[row.doc_type] || row.doc_type} ${row.doc_no}`}>
+      <div className="space-y-3 text-sm">
+        <div className="flex items-center gap-2">
+          <Badge tone={row.action === 'deleted' ? 'danger' : 'amber'}>{row.action === 'deleted' ? 'Deleted' : 'Edited'}</Badge>
+          <span className="text-gray-500">
+            {new Date(row.performed_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            {' '}by {row.performed_by_name || 'Unknown'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-600">
+          <div>Date: <span className="text-gray-900">{formatDate(row.doc_date)}</span></div>
+          <div>Amount: <span className="text-gray-900 font-medium">{formatPkr(row.amount)}</span></div>
+          <div>Party: <span className="text-gray-900">{row.party_name || '—'}</span></div>
+          {row.brand_key && <div>Brand: <span className="text-gray-900">{brandDisplayName(row.brand_key)}</span></div>}
+        </div>
+
+        {isInvoice && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b" style={{ borderColor: THEME.line }}>
+                  <th className="py-1.5 pr-2">Item</th>
+                  <th className="py-1.5 pr-2">Qty</th>
+                  <th className="py-1.5 pr-2">Rate</th>
+                  <th className="py-1.5 pr-2">Color</th>
+                  <th className="py-1.5 pr-2">GSM</th>
+                  <th className="py-1.5 pr-2 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(snap.items || []).map((it, i) => (
+                  <tr key={i} className="border-b" style={{ borderColor: THEME.line }}>
+                    <td className="py-1.5 pr-2">{it.description || '—'}</td>
+                    <td className="py-1.5 pr-2">{it.quantity} {it.unit}</td>
+                    <td className="py-1.5 pr-2">{formatPkr(it.rate)}</td>
+                    <td className="py-1.5 pr-2">{it.color || '—'}</td>
+                    <td className="py-1.5 pr-2">{it.gsm || '—'}</td>
+                    <td className="py-1.5 pr-2 text-right">{formatPkr(Number(it.quantity) * Number(it.rate))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {isPayment && (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-600">
+            <div>Direction: <span className="text-gray-900">{snap.payment?.direction === 'receipt' ? 'Receipt' : 'Payment'}</span></div>
+            <div>Method: <span className="text-gray-900">{snap.payment?.method || '—'}</span></div>
+            <div>Cash/Bank account: <span className="text-gray-900">{snap.cash_bank_account_name || '—'}</span></div>
+            <div>Notes: <span className="text-gray-900">{snap.payment?.notes || '—'}</span></div>
+          </div>
+        )}
+
+        {isJv && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b" style={{ borderColor: THEME.line }}>
+                  <th className="py-1.5 pr-2">Account</th>
+                  <th className="py-1.5 pr-2 text-right">Debit</th>
+                  <th className="py-1.5 pr-2 text-right">Credit</th>
+                  <th className="py-1.5 pr-2">Narration</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(snap.lines || []).map((l, i) => (
+                  <tr key={i} className="border-b" style={{ borderColor: THEME.line }}>
+                    <td className="py-1.5 pr-2">{l.account_name || '—'}</td>
+                    <td className="py-1.5 pr-2 text-right">{Number(l.debit) ? formatPkr(l.debit) : ''}</td>
+                    <td className="py-1.5 pr-2 text-right">{Number(l.credit) ? formatPkr(l.credit) : ''}</td>
+                    <td className="py-1.5 pr-2">{l.narration || ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="flex justify-end pt-2">
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DocumentAuditLogTab() {
+  const [action, setAction] = useState('all');
+  const [brand, setBrand] = useState('all');
+  const [from, setFrom] = useState(toDateInput(startOfMonth()));
+  const [to, setTo] = useState(toDateInput(new Date()));
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [detail, setDetail] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    setError(null);
+    fetchDocumentAuditLog({ action, brandKey: brand, from, to })
+      .then((r) => { if (alive) setRows(r); })
+      .catch((e) => { if (alive) setError(e.message); });
+    return () => { alive = false; };
+  }, [action, brand, from, to]);
+
+  return (
+    <div>
+      <p className="text-sm text-gray-500 mb-4">
+        Every Purchase/Sale document, CRV/BRV/CPV/BPV voucher, and Journal Voucher that was Edited or permanently
+        Deleted — a record survives here even after the document itself is gone. Click a row for full detail.
+      </p>
+      <div className="flex flex-wrap items-end gap-3 mb-5">
+        <ReportFilterBar from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+        <div className="w-48">
+          <Select label="Brand" value={brand} onChange={(e) => setBrand(e.target.value)}>
+            <option value="all">All brands</option>
+            <option value="skf_polybags">SKF PolyBags</option>
+            <option value="skf_polytex">SKF PolyTex</option>
+          </Select>
+        </div>
+        <div className="inline-flex rounded-lg border p-1 bg-white" style={{ borderColor: THEME.line }}>
+          {[{ k: 'all', l: 'All' }, { k: 'edited', l: 'Edited' }, { k: 'deleted', l: 'Deleted' }].map((o) => (
+            <button
+              key={o.k}
+              onClick={() => setAction(o.k)}
+              className="px-3 py-1.5 rounded-md text-sm font-medium"
+              style={action === o.k ? { backgroundColor: THEME.blue, color: 'white' } : { color: THEME.ink }}
+            >
+              {o.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && <div className="text-sm mb-4" style={{ color: THEME.danger }}>Could not load: {error}</div>}
+      {rows === null ? (
+        <div className="py-20 flex justify-center"><Spinner /></div>
+      ) : rows.length === 0 ? (
+        <EmptyState>No edited or deleted documents in this range.</EmptyState>
+      ) : (
+        <Card className="divide-y" style={{ borderColor: THEME.line }}>
+          {rows.map((r) => (
+            <button key={r.id} onClick={() => setDetail(r)} className="w-full text-left flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-gray-50">
+              <div className="flex-1 min-w-[180px]">
+                <div className="font-medium flex items-center gap-2">
+                  {DOC_TYPE_LABELS[r.doc_type] || r.doc_type} {r.doc_no}
+                  <Badge tone={r.action === 'deleted' ? 'danger' : 'amber'}>{r.action === 'deleted' ? 'Deleted' : 'Edited'}</Badge>
+                </div>
+                <div className="text-xs text-gray-500">
+                  {formatDate(r.doc_date)} &middot; {r.party_name || '—'}{r.brand_key ? ` · ${brandDisplayName(r.brand_key)}` : ''}
+                </div>
+              </div>
+              <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(r.amount)}</div>
+              <div className="text-xs text-gray-400 w-40 text-right">
+                {new Date(r.performed_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                <br />by {r.performed_by_name || 'Unknown'}
+              </div>
+            </button>
+          ))}
+        </Card>
+      )}
+
+      <DocumentAuditDetailModal row={detail} onClose={() => setDetail(null)} />
     </div>
   );
 }
