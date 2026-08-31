@@ -331,12 +331,6 @@ async function fetchOpenSaleOrders(partyId) {
   return data;
 }
 
-async function fetchStockBalance() {
-  const { data, error } = await supabase.from('v_stock_balance').select('item_id, qty_on_hand');
-  if (error) throw error;
-  return data || [];
-}
-
 async function fetchInvoiceWithItems(invoiceId) {
   const [{ data: invoice, error }, { data: items, error: itemsError }] = await Promise.all([
     supabase.from('invoices').select('*, parties(name)').eq('id', invoiceId).single(),
@@ -3995,10 +3989,7 @@ function PurchaseOldList({ invoiceType, onEdit }) {
 // Module's structure exactly (see its doc comment for the general design
 // conventions); the differences are: party type is 'customer', the Bill's
 // reference field is the customer's own PO number (not a supplier invoice
-// number we're recording), linking is against open Sale Orders, and the Bill
-// shows a soft, non-blocking "only N in stock" warning per line — selling
-// more than what's on hand is allowed (this is a fast trading tool, not an
-// inventory gate), it just gets flagged.
+// number we're recording), and linking is against open Sale Orders.
 // ============================================================================
 
 const SALE_TABS = [
@@ -4137,7 +4128,6 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
   const [loadingCharge, setLoadingCharge] = useState('0');
   const [discount, setDiscount] = useState('0');
   const [tax, setTax] = useState('0');
-  const [stockMap, setStockMap] = useState({});
 
   const dateRef = useRef(null);
   const customerRef = useRef(null);
@@ -4227,18 +4217,6 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     })();
     return () => { alive = false; };
   }, [editInvoiceId, brands]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!isBill) return;
-    let alive = true;
-    fetchStockBalance().then((rows) => {
-      if (!alive) return;
-      const map = {};
-      rows.forEach((r) => { map[r.item_id] = r; });
-      setStockMap(map);
-    });
-    return () => { alive = false; };
-  }, [isBill]);
 
   useEffect(() => {
     if (!isBill || !customer) { setSoOptions([]); return; }
@@ -4388,11 +4366,6 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
         });
         show(`Saved. ${editInvoiceNo} updated.`);
         clearDraft();
-        if (isBill) fetchStockBalance().then((rows) => {
-          const map = {};
-          rows.forEach((r) => { map[r.item_id] = r; });
-          setStockMap(map);
-        });
         // An edit is a single, focused operation on one document — always
         // return to the list afterward rather than clearing for another entry.
         onSavedClose?.();
@@ -4414,11 +4387,6 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
       setSavedNo(invoice.invoice_no);
       clearDraft();
       resetForm();
-      if (isBill) fetchStockBalance().then((rows) => {
-        const map = {};
-        rows.forEach((r) => { map[r.item_id] = r; });
-        setStockMap(map);
-      });
       if (closeAfter) onSavedClose?.();
     } catch (e) {
       show(`Could not save: ${e.message}`, 'danger');
@@ -4474,9 +4442,6 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
   const units = purchaseUnitOptionsFor(brand.category);
 
   function lineFields(i, line) {
-    const stockRow = stockMap[line.itemId];
-    const available = stockRow ? Number(stockRow.qty_on_hand) : null;
-    const short = isBill && line.itemId && available !== null && Number(line.quantity) > available;
     return {
       item: (
         <ItemPicker
@@ -4501,19 +4466,12 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
         </Select>
       ),
       qty: (
-        <div>
-          <Input
-            ref={getLineRefs(i).qty}
-            type="number" label="Qty" value={line.quantity}
-            onChange={(e) => updateLine(i, { quantity: e.target.value })}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).rate.current?.focus(); } }}
-          />
-          {short && (
-            <p className="text-xs mt-1" style={{ color: THEME.danger }}>
-              Only {available} {line.unit || ''} in stock
-            </p>
-          )}
-        </div>
+        <Input
+          ref={getLineRefs(i).qty}
+          type="number" label="Qty" value={line.quantity}
+          onChange={(e) => updateLine(i, { quantity: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).rate.current?.focus(); } }}
+        />
       ),
       rate: (
         <Input
