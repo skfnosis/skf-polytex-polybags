@@ -169,13 +169,16 @@ function purchaseUnitOptionsFor() {
 // design note for why. Reads use plain selects gated by RLS.
 // ============================================================================
 
-async function signInWithUsername(username, password) {
+async function signInWithUsername(username, password, captchaToken) {
   const { data: email, error: rpcError } = await supabase.rpc('email_for_username', {
     p_username: username,
   });
   if (rpcError) throw rpcError;
   if (!email) throw new Error(`No active account found for "${username}".`);
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabase.auth.signInWithPassword({
+    email, password,
+    options: captchaToken ? { captchaToken } : undefined,
+  });
   if (error) throw error;
 }
 
@@ -1769,20 +1772,64 @@ function AuthProvider({ children }) {
 // LOGIN SCREEN
 // ============================================================================
 
+// Cloudflare Turnstile is only active once VITE_TURNSTILE_SITE_KEY is set —
+// until then this renders nothing and login behaves exactly as before, so
+// the rollout is safe: wire the site key in (and turn on CAPTCHA protection
+// in the Supabase Auth dashboard) whenever that's ready, no code changes.
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || '';
+
+function TurnstileWidget({ onToken, resetKey }) {
+  const containerRef = useRef(null);
+  const widgetId = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    function render() {
+      if (cancelled || !containerRef.current || !window.turnstile) return;
+      widgetId.current = window.turnstile.render(containerRef.current, {
+        sitekey: TURNSTILE_SITE_KEY,
+        callback: onToken,
+        'expired-callback': () => onToken(''),
+        'error-callback': () => onToken(''),
+      });
+    }
+    if (window.turnstile) render();
+    else {
+      // Script loads with `defer`, so on a fast connection this effect can
+      // run before window.turnstile exists yet — poll briefly until it does.
+      const t = setInterval(() => { if (window.turnstile) { clearInterval(t); render(); } }, 100);
+      setTimeout(() => clearInterval(t), 10000);
+    }
+    return () => {
+      cancelled = true;
+      if (widgetId.current != null && window.turnstile) window.turnstile.remove(widgetId.current);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (resetKey && widgetId.current != null && window.turnstile) window.turnstile.reset(widgetId.current);
+  }, [resetKey]);
+
+  return <div ref={containerRef} />;
+}
+
 function LoginScreen() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
 
   async function submit(e) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      await signInWithUsername(username.trim(), password);
+      await signInWithUsername(username.trim(), password, captchaToken);
     } catch (err) {
       setError(err.message || 'Could not sign in.');
+      if (TURNSTILE_SITE_KEY) { setCaptchaToken(''); setCaptchaResetKey((k) => k + 1); }
     } finally {
       setLoading(false);
     }
@@ -1815,10 +1862,11 @@ function LoginScreen() {
           <Card className="p-6 space-y-4" style={{ borderTop: `3px solid ${LIME}` }}>
             <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
             <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            {TURNSTILE_SITE_KEY && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaResetKey} />}
             {error && <p className="text-sm" style={{ color: THEME.danger }}>{error}</p>}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (!!TURNSTILE_SITE_KEY && !captchaToken)}
               className="w-full mt-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               style={{ backgroundColor: LIME, color: '#12141C' }}
             >
