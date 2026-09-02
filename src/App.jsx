@@ -2520,8 +2520,9 @@ function DashboardScreen({ onNavigate }) {
         </div>
       )}
 
-      {/* Row 1 — Cash & Bank */}
-      <div className="flex items-center justify-between">
+      {/* Row 1 — Cash & Bank. Desktop-only: mobile already shows this in the
+          hero card above, and this whole section would just repeat it. */}
+      <div className="hidden md:flex items-center justify-between">
         <SectionHeading>Cash &amp; Bank</SectionHeading>
         <button
           onClick={() => setBalancesVisible((v) => !v)}
@@ -2532,7 +2533,7 @@ function DashboardScreen({ onNavigate }) {
           {balancesVisible ? <Eye size={16} /> : <EyeOff size={16} />}
         </button>
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="hidden md:grid grid-cols-2 gap-4">
         <CashBankCard title="Cash in Hand" icon={Wallet} total={cashTotal} accounts={cashAccounts} visible={balancesVisible} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
         <CashBankCard title="Bank Balance" icon={Landmark} total={bankTotal} accounts={bankAccounts} visible={balancesVisible} onSelectAccount={(a) => setLedgerAccount({ id: a.id, name: a.name })} />
       </div>
