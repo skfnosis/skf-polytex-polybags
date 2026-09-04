@@ -276,6 +276,12 @@ async function fetchUnpostedDocuments() {
   return data || [];
 }
 
+async function peekNextDocNo(docKind) {
+  const { data, error } = await supabase.rpc('peek_next_doc_no', { p_doc_kind: docKind });
+  if (error) return '';
+  return data || '';
+}
+
 async function fetchDocumentAuditLog({ action, brandKey, from, to } = {}) {
   let q = supabase.from('document_audit_log').select()
     .gte('performed_at', `${from}T00:00:00`).lte('performed_at', `${to}T23:59:59`);
@@ -2967,11 +2973,19 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
   const [lines, setLines] = useState([emptyPurchaseLine()]);
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [previewNo, setPreviewNo] = useState('');
   const [showReport, setShowReport] = useState(false);
   const [savingImage, setSavingImage] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(!!editInvoiceId);
   const [editInvoiceNo, setEditInvoiceNo] = useState(null);
   const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    if (editInvoiceId) return;
+    let alive = true;
+    peekNextDocNo(invoiceType).then((no) => { if (alive) setPreviewNo(no); });
+    return () => { alive = false; };
+  }, [invoiceType, editInvoiceId]);
 
   const [supplierInvoiceNo, setSupplierInvoiceNo] = useState('');
   const [poOptions, setPoOptions] = useState([]);
@@ -3224,7 +3238,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
 
   function buildDraft() {
     const pseudoInvoice = {
-      invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: vendor?.name },
+      invoice_no: savedNo || previewNo || 'DRAFT', invoice_date: date, parties: { name: vendor?.name },
       invoice_type: invoiceType, category: brand?.category, supplier_invoice_no: supplierInvoiceNo, brand_key: brand?.brand_key,
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
@@ -4235,11 +4249,19 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
   const [lines, setLines] = useState([emptySaleLine()]);
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [previewNo, setPreviewNo] = useState('');
   const [showReport, setShowReport] = useState(false);
   const [savingImage, setSavingImage] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(!!editInvoiceId);
   const [editInvoiceNo, setEditInvoiceNo] = useState(null);
   const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    if (editInvoiceId) return;
+    let alive = true;
+    peekNextDocNo(invoiceType).then((no) => { if (alive) setPreviewNo(no); });
+    return () => { alive = false; };
+  }, [invoiceType, editInvoiceId]);
 
   const [customerPoNo, setCustomerPoNo] = useState('');
   const [soOptions, setSoOptions] = useState([]);
@@ -4520,7 +4542,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
 
   function buildDraft() {
     const pseudoInvoice = {
-      invoice_no: savedNo || 'DRAFT', invoice_date: date, parties: { name: customer?.name },
+      invoice_no: savedNo || previewNo || 'DRAFT', invoice_date: date, parties: { name: customer?.name },
       invoice_type: invoiceType, category: brand?.category, customer_po_no: customerPoNo, brand_key: brand?.brand_key,
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
@@ -5153,6 +5175,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [previewNo, setPreviewNo] = useState('');
   const [showReport, setShowReport] = useState(false);
   const [savingImage, setSavingImage] = useState(false);
   const { show, ToastHost } = useToast();
@@ -5168,6 +5191,12 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
   useEffect(() => { dateRef.current?.focus(); }, []);
+
+  useEffect(() => {
+    let alive = true;
+    peekNextDocNo(tab.key).then((no) => { if (alive) setPreviewNo(no); });
+    return () => { alive = false; };
+  }, [tab.key]);
 
   useEffect(() => {
     fetchChartOfAccounts().then((rows) => {
@@ -5236,7 +5265,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
 
   function buildDraftPayment() {
     return {
-      voucher_no: savedNo || 'DRAFT', payment_date: date, direction: tab.direction,
+      voucher_no: savedNo || previewNo || 'DRAFT', payment_date: date, direction: tab.direction,
       amount, method: tab.kind === 'cash' ? 'cash' : method, notes,
       parties: usingAccount ? null : { name: party?.name },
       direct_account: usingAccount ? { name: expenseAccount?.name } : null,
@@ -5363,7 +5392,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
         excelData={{
           columns: ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Narration', 'Amount'],
           rows: [[
-            savedNo || 'DRAFT', formatDate(date), usingAccount ? (expenseAccount?.name || '') : (party?.name || ''),
+            savedNo || previewNo || 'DRAFT', formatDate(date), usingAccount ? (expenseAccount?.name || '') : (party?.name || ''),
             accounts.find((a) => a.id === cashBankAccountId)?.name || '',
             tab.kind === 'cash' ? 'cash' : method, notes, Number(amount) || 0,
           ]],
@@ -5625,9 +5654,16 @@ function JournalVoucherEntryForm({ onSavedClose }) {
   const [lines, setLines] = useState([emptyJvLine(), emptyJvLine()]);
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
+  const [previewNo, setPreviewNo] = useState('');
   const [showReport, setShowReport] = useState(false);
   const [savingImage, setSavingImage] = useState(false);
   const { show, ToastHost } = useToast();
+
+  useEffect(() => {
+    let alive = true;
+    peekNextDocNo('jv').then((no) => { if (alive) setPreviewNo(no); });
+    return () => { alive = false; };
+  }, []);
 
   const dateRef = useRef(null);
   const narrationRef = useRef(null);
@@ -5693,7 +5729,7 @@ function JournalVoucherEntryForm({ onSavedClose }) {
   }
 
   function buildDraftJv() {
-    const pseudoVoucher = { voucher_no: savedNo || 'DRAFT', voucher_date: date, narration, total_amount: totalDebit };
+    const pseudoVoucher = { voucher_no: savedNo || previewNo || 'DRAFT', voucher_date: date, narration, total_amount: totalDebit };
     const pseudoLines = lines
       .filter((l) => l.accountId && (Number(l.debit) > 0 || Number(l.credit) > 0))
       .map((l) => ({ chart_of_accounts: { name: l.accountName }, debit: l.debit, credit: l.credit, line_narration: l.narration }));
