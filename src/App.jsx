@@ -1894,9 +1894,7 @@ function LoginScreen() {
 
 const NAV_GROUPS = [
   { label: 'Dashboard', keys: ['dashboard'] },
-  { label: 'Entry', keys: ['entry_voucher', 'entry_jv'] },
-  { label: 'Sale', keys: ['entry_sale'] },
-  { label: 'Purchase', keys: ['entry_purchase'] },
+  { label: 'Entry', keys: ['entry_voucher', 'entry_jv', 'entry_sale', 'entry_purchase'] },
   { label: 'Material Chart', keys: ['item_master'] },
   { label: 'Chart of Accounts', keys: ['party_master'] },
   { label: 'Admin', keys: ['settings'] },
