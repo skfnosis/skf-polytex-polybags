@@ -118,6 +118,7 @@ const PAGES = [
   { key: 'entry_purchase', label: 'Purchase', icon: ClipboardList },
   { key: 'item_master', label: 'Material Chart', icon: Package },
   { key: 'party_master', label: 'Chart of Accounts', icon: Users },
+  { key: 'reports', label: 'Reports', icon: BarChart3 },
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -1916,6 +1917,7 @@ function LoginScreen() {
 const NAV_GROUPS = [
   { label: 'Dashboard', keys: ['dashboard'] },
   { label: 'Entry', keys: ['entry_voucher', 'entry_jv', 'entry_sale', 'entry_purchase'] },
+  { label: 'Reports', keys: ['reports'] },
   { label: 'Material Chart', keys: ['item_master'] },
   { label: 'Chart of Accounts', keys: ['party_master'] },
   { label: 'Admin', keys: ['settings'] },
@@ -2115,6 +2117,7 @@ function PageRouter({ page, param, mode, onNavigate }) {
     case 'entry_purchase': return <PurchaseModule key={`${param}_${mode}`} initialTab={param} initialMode={mode} />;
     case 'item_master': return <MaterialChartScreen />;
     case 'party_master': return <ChartOfAccountsScreen key={param} initialTab={param} />;
+    case 'reports': return <ReportsScreen key={param} initialTab={param} />;
     case 'settings': return <SettingsScreen />;
     default: return null;
   }
@@ -2557,12 +2560,12 @@ function DashboardScreen({ onNavigate }) {
         )}
       </div>
 
-      {onNavigate && visiblePages.includes('party_master') && (
+      {onNavigate && visiblePages.includes('reports') && (
         <div className="md:hidden mb-5">
           <MobileListRow
             icon={BookOpen} iconBg="#EEF2FF" iconColor={THEME.blue}
             title="General Ledger" subtitle="Look up any party or account"
-            onClick={() => onNavigate('party_master', 'ledger')}
+            onClick={() => onNavigate('reports', 'ledger')}
             right={<ChevronRight size={18} className="text-gray-300" />}
           />
         </div>
@@ -4196,8 +4199,8 @@ function PurchaseOldList({ invoiceType, onEdit }) {
                 <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
-                {canApprove && row.status === 'posted' && (
-                  <button onClick={() => onEdit?.(row)} title="Edit" aria-label="Edit" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
+                {onEdit && canApprove && row.status === 'posted' && (
+                  <button onClick={() => onEdit(row)} title="Edit" aria-label="Edit" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                     <Pencil size={16} />
                   </button>
                 )}
@@ -4213,12 +4216,12 @@ function PurchaseOldList({ invoiceType, onEdit }) {
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
-                {canApprove && row.status === 'posted' && (
+                {onEdit && canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
-                {canApprove && row.status === 'voided' && (
+                {onEdit && canApprove && row.status === 'voided' && (
                   <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <Trash2 size={16} />
                   </button>
@@ -5167,8 +5170,8 @@ function SaleOldList({ invoiceType, onEdit }) {
                 <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
-                {canApprove && row.status === 'posted' && (
-                  <button onClick={() => onEdit?.(row)} title="Edit" aria-label="Edit" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
+                {onEdit && canApprove && row.status === 'posted' && (
+                  <button onClick={() => onEdit(row)} title="Edit" aria-label="Edit" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                     <Pencil size={16} />
                   </button>
                 )}
@@ -5184,12 +5187,12 @@ function SaleOldList({ invoiceType, onEdit }) {
                 <button onClick={() => handleExportExcel(row)} title="Export Excel" aria-label="Export Excel" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <FileSpreadsheet size={16} />
                 </button>
-                {canApprove && row.status === 'posted' && (
+                {onEdit && canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
-                {canApprove && row.status === 'voided' && (
+                {onEdit && canApprove && row.status === 'voided' && (
                   <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <Trash2 size={16} />
                   </button>
@@ -5601,7 +5604,7 @@ function VoucherViewModal({ payment, onClose }) {
   );
 }
 
-function VoucherOldList({ tab }) {
+function VoucherOldList({ tab, readOnly }) {
   const { permissions } = useAuth();
   const canApprove = !!permissions.entry_voucher?.can_approve;
 
@@ -5723,12 +5726,12 @@ function VoucherOldList({ tab }) {
                 <button onClick={() => setReportRow(row)} title="Report" aria-label="Report" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Eye size={16} />
                 </button>
-                {canApprove && row.status === 'posted' && (
+                {!readOnly && canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
-                {canApprove && row.status === 'voided' && (
+                {!readOnly && canApprove && row.status === 'voided' && (
                   <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <Trash2 size={16} />
                   </button>
@@ -6101,7 +6104,7 @@ function JournalVoucherViewModal({ doc, onClose }) {
   );
 }
 
-function JournalVoucherOldList() {
+function JournalVoucherOldList({ readOnly } = {}) {
   const { permissions } = useAuth();
   const canApprove = !!permissions.entry_jv?.can_approve;
 
@@ -6225,12 +6228,12 @@ function JournalVoucherOldList() {
                 <button onClick={() => handleReport(row)} title="Report" aria-label="Report" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Eye size={16} />
                 </button>
-                {canApprove && row.status === 'posted' && (
+                {!readOnly && canApprove && row.status === 'posted' && (
                   <button onClick={() => setVoidTarget(row)} title="Void" aria-label="Void" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <X size={16} />
                   </button>
                 )}
-                {canApprove && row.status === 'voided' && (
+                {!readOnly && canApprove && row.status === 'voided' && (
                   <button onClick={() => setDeleteTarget(row)} title="Delete" aria-label="Delete" className="p-2.5 rounded-lg hover:bg-red-50 text-red-500">
                     <Trash2 size={16} />
                   </button>
@@ -6510,19 +6513,17 @@ function EditMaterialModal({ item, onClose, onSaved }) {
 }
 
 // ============================================================================
-// CHART OF ACCOUNTS — merges what used to be Party Master, the Admin-only
-// ledger-account manager, and the Reports page's General Ledger / Trial
-// Balance into one screen with four tabs. Parties and system accounts are
-// really the same concept (every party has an auto-generated
+// CHART OF ACCOUNTS — merges what used to be Party Master and the Admin-only
+// ledger-account manager into one screen with two tabs. Parties and system
+// accounts are really the same concept (every party has an auto-generated
 // chart_of_accounts row) — this screen is where you look up either kind of
-// account's ledger, not just parties.
+// account. General Ledger and Trial Balance moved out to the Reports page,
+// alongside Sale/Purchase/Voucher reports — see REPORT_TABS below.
 // ============================================================================
 
 const COA_TABS = [
   { key: 'parties', label: 'Parties' },
   { key: 'accounts', label: 'Accounts' },
-  { key: 'ledger', label: 'General Ledger' },
-  { key: 'trial', label: 'Trial Balance' },
 ];
 
 function ChartOfAccountsScreen({ initialTab }) {
@@ -6543,8 +6544,113 @@ function ChartOfAccountsScreen({ initialTab }) {
       </div>
       {tab === 'parties' && <PartiesTab />}
       {tab === 'accounts' && <AccountsTab />}
+    </div>
+  );
+}
+
+// ============================================================================
+// REPORTS — General Ledger, Trial Balance, and read-only versions of the
+// Sale / Purchase / Voucher "Old" lists, all in one place next to Entry.
+// The Old lists are reused as-is (same filters, same Print/Excel/Image
+// export) just without an onEdit handler, which also hides their Edit/Void
+// buttons — this page is for looking things up, not changing them.
+// ============================================================================
+
+const REPORT_TABS = [
+  { key: 'ledger', label: 'General Ledger' },
+  { key: 'trial', label: 'Trial Balance' },
+  { key: 'sale', label: 'Sale Report' },
+  { key: 'purchase', label: 'Purchase Report' },
+  { key: 'vouchers', label: 'Vouchers' },
+];
+
+function ReportsScreen({ initialTab }) {
+  const [tab, setTab] = useState(initialTab || 'ledger');
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-5">
+        {REPORT_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className="px-3 py-1.5 rounded-full text-sm font-medium border"
+            style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
       {tab === 'ledger' && <GeneralLedgerTab />}
       {tab === 'trial' && <TrialBalanceReport />}
+      {tab === 'sale' && <SaleReportTab />}
+      {tab === 'purchase' && <PurchaseReportTab />}
+      {tab === 'vouchers' && <VoucherReportTab />}
+    </div>
+  );
+}
+
+function SaleReportTab() {
+  const [docType, setDocType] = useState('sale');
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-4">
+        {SALE_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setDocType(t.key)}
+            className="px-3 py-1.5 rounded-full text-sm font-medium border"
+            style={docType === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <SaleOldList key={docType} invoiceType={docType} />
+    </div>
+  );
+}
+
+function PurchaseReportTab() {
+  const [docType, setDocType] = useState('purchase');
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-4">
+        {PURCHASE_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setDocType(t.key)}
+            className="px-3 py-1.5 rounded-full text-sm font-medium border"
+            style={docType === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <PurchaseOldList key={docType} invoiceType={docType} />
+    </div>
+  );
+}
+
+const VOUCHER_REPORT_TABS = [...VOUCHER_TABS, { key: 'jv', label: 'General Voucher (JV)' }];
+
+function VoucherReportTab() {
+  const [voucherType, setVoucherType] = useState('crv');
+  const active = VOUCHER_TABS.find((t) => t.key === voucherType);
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-4">
+        {VOUCHER_REPORT_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setVoucherType(t.key)}
+            className="px-3 py-1.5 rounded-full text-sm font-medium border"
+            style={voucherType === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {voucherType === 'jv' ? <JournalVoucherOldList readOnly /> : <VoucherOldList key={voucherType} tab={active} readOnly />}
     </div>
   );
 }
