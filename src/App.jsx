@@ -605,7 +605,7 @@ async function deleteInvoice(invoiceId) {
   if (error) throw error;
 }
 
-async function recordPayment({ paymentDate, partyId, directAccountId, direction, amount, method, cashBankAccountId, linkedInvoiceId, notes }) {
+async function recordPayment({ paymentDate, partyId, directAccountId, direction, amount, method, cashBankAccountId, linkedInvoiceId, notes, chequeNo }) {
   const { data, error } = await supabase.rpc('record_payment', {
     p_payment_date: paymentDate,
     p_party_id: partyId || null,
@@ -616,6 +616,7 @@ async function recordPayment({ paymentDate, partyId, directAccountId, direction,
     p_linked_invoice_id: linkedInvoiceId || null,
     p_notes: notes || null,
     p_direct_account_id: directAccountId || null,
+    p_cheque_no: chequeNo || null,
   });
   if (error) throw error;
   return data;
@@ -2982,9 +2983,8 @@ function purchaseDocLabel(invoiceType) {
 
 function PurchaseModule({ initialTab, initialMode }) {
   const [tab, setTab] = useState(initialTab || 'purchase');
-  // Opening the page normally lands on the entries list ('old'); only a
-  // quick-add shortcut passes initialMode='new' to jump straight to entry.
-  const [mode, setMode] = useState(initialMode || 'old');
+  // Opening the page always lands straight on the entry form, ready to type.
+  const [mode, setMode] = useState(initialMode || 'new');
   // Editing an old document is orthogonal to the New/Old toggle above — it's
   // entered via the Old list's Edit button and always returns to the Old
   // list on close, regardless of whatever the toggle was last set to.
@@ -3012,7 +3012,7 @@ function PurchaseModule({ initialTab, initialMode }) {
         <SegmentedBar
           options={PURCHASE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
           value={tab}
-          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('old'); }); }}
+          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('new'); }); }}
         />
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
@@ -3027,7 +3027,7 @@ function PurchaseModule({ initialTab, initialMode }) {
           {PURCHASE_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('old'); }); }}
+              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('new'); }); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -4258,9 +4258,8 @@ function saleDocLabel(invoiceType) {
 
 function SalesModule({ initialTab, initialMode }) {
   const [tab, setTab] = useState(initialTab || 'sale');
-  // Opening the page normally lands on the entries list ('old'); only a
-  // quick-add shortcut passes initialMode='new' to jump straight to entry.
-  const [mode, setMode] = useState(initialMode || 'old');
+  // Opening the page always lands straight on the entry form, ready to type.
+  const [mode, setMode] = useState(initialMode || 'new');
   // Editing an old document is orthogonal to the New/Old toggle above — it's
   // entered via the Old list's Edit button and always returns to the Old
   // list on close, regardless of whatever the toggle was last set to.
@@ -4288,7 +4287,7 @@ function SalesModule({ initialTab, initialMode }) {
         <SegmentedBar
           options={SALE_TABS.map((t) => ({ key: t.key, label: t.mobileLabel }))}
           value={tab}
-          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('old'); }); }}
+          onChange={(k) => { if (k !== tab) guardedSwitch(() => { setTab(k); setMode('new'); }); }}
         />
         <SegmentedBar
           options={[{ key: 'new', label: 'New' }, { key: 'old', label: 'Old' }]}
@@ -4303,7 +4302,7 @@ function SalesModule({ initialTab, initialMode }) {
           {SALE_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('old'); }); }}
+              onClick={() => { if (t.key !== tab) guardedSwitch(() => { setTab(t.key); setMode('new'); }); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -5226,9 +5225,8 @@ const VOUCHER_TABS = [
 
 function VoucherModule({ initialTab, initialMode }) {
   const [tab, setTab] = useState(initialTab || 'crv');
-  // Opening the page normally lands on the entries list ('old'); only a
-  // quick-add shortcut passes initialMode='new' to jump straight to entry.
-  const [mode, setMode] = useState(initialMode || 'old');
+  // Opening the page always lands straight on the entry form, ready to type.
+  const [mode, setMode] = useState(initialMode || 'new');
   const active = VOUCHER_TABS.find((t) => t.key === tab);
 
   return (
@@ -5238,7 +5236,7 @@ function VoucherModule({ initialTab, initialMode }) {
           {VOUCHER_TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => { setTab(t.key); setMode('old'); }}
+              onClick={() => { setTab(t.key); setMode('new'); }}
               className="px-3 py-1.5 rounded-full text-sm font-medium border"
               style={tab === t.key ? { backgroundColor: THEME.blue, color: 'white', borderColor: THEME.blue } : { borderColor: THEME.line }}
             >
@@ -5289,6 +5287,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   const [linkedInvoiceId, setLinkedInvoiceId] = useState('');
   const [outstanding, setOutstanding] = useState([]);
   const [notes, setNotes] = useState('');
+  const [chequeNo, setChequeNo] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [previewNo, setPreviewNo] = useState('');
@@ -5299,8 +5298,9 @@ function VoucherEntryForm({ tab, onSavedClose }) {
   const dateRef = useRef(null);
   const partyRef = useRef(null);
   const expenseAccountRef = useRef(null);
-  const amountRef = useRef(null);
   const notesRef = useRef(null);
+  const chequeNoRef = useRef(null);
+  const amountRef = useRef(null);
 
   const usingAccount = isPaymentDirection && payMode === 'account';
   const isDirty = !!party || !!expenseAccount || !!amount.trim() || !!notes.trim();
@@ -5346,6 +5346,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
     setAmount('');
     setLinkedInvoiceId('');
     setNotes('');
+    setChequeNo('');
     requestAnimationFrame(() => dateRef.current?.focus());
   }
 
@@ -5366,6 +5367,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
         direction: tab.direction, amount,
         method: tab.kind === 'cash' ? 'cash' : method, cashBankAccountId,
         linkedInvoiceId: linkedInvoiceId || undefined, notes,
+        chequeNo: tab.kind === 'bank' ? chequeNo : undefined,
       });
       const saved = await fetchPaymentById(id);
       show(`Saved. ${saved.voucher_no} created.`);
@@ -5383,6 +5385,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
     return {
       voucher_no: savedNo || previewNo || 'DRAFT', payment_date: date, direction: tab.direction,
       amount, method: tab.kind === 'cash' ? 'cash' : method, notes,
+      cheque_no: tab.kind === 'bank' ? chequeNo : null,
       parties: usingAccount ? null : { name: party?.name },
       direct_account: usingAccount ? { name: expenseAccount?.name } : null,
       chart_of_accounts: { name: accounts.find((a) => a.id === cashBankAccountId)?.name },
@@ -5443,13 +5446,25 @@ function VoucherEntryForm({ tab, onSavedClose }) {
             types={PAYABLE_ACCOUNT_TYPES} value={expenseAccount} onChange={setExpenseAccount}
             resetKey={expenseAccountResetKey} inputRef={expenseAccountRef}
             label="Expense / Drawings account" placeholder="Search expense or drawings accounts…"
-            onEnterNext={() => amountRef.current?.focus()}
+            onEnterNext={() => notesRef.current?.focus()}
           />
         ) : (
           <PartyPicker
             type={partyType} value={party} onChange={setParty}
             resetKey={partyResetKey} inputRef={partyRef} label="Party"
-            onEnterNext={() => amountRef.current?.focus()}
+            onEnterNext={() => notesRef.current?.focus()}
+          />
+        )}
+
+        <Input
+          ref={notesRef} label="Narration (optional)" value={notes} onChange={(e) => setNotes(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (tab.kind === 'bank' ? chequeNoRef : amountRef).current?.focus(); } }}
+        />
+
+        {tab.kind === 'bank' && (
+          <Input
+            ref={chequeNoRef} label="Cheque No. (optional)" value={chequeNo} onChange={(e) => setChequeNo(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); amountRef.current?.focus(); } }}
           />
         )}
 
@@ -5474,7 +5489,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
         <Input
           ref={amountRef} type="number" label="Amount (PKR)" value={amount}
           onChange={(e) => setAmount(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); notesRef.current?.focus(); } }}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(false); } }}
         />
 
         {outstanding.length > 0 && (
@@ -5486,8 +5501,6 @@ function VoucherEntryForm({ tab, onSavedClose }) {
           </Select>
         )}
 
-        <Input ref={notesRef} label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
-
         <div className="flex flex-wrap items-center gap-2 pt-2">
           <Button onClick={() => save(false)} loading={saving}>Save</Button>
           <Button variant="outline" onClick={() => save(true)} loading={saving}>Save &amp; Close</Button>
@@ -5498,7 +5511,7 @@ function VoucherEntryForm({ tab, onSavedClose }) {
           {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
         </div>
         <p className="text-xs text-gray-500">
-          Enter moves Date → {usingAccount ? 'Account' : 'Party'} → Amount → Notes. Ctrl+S saves, Ctrl+P prints the draft.
+          Enter moves Date → {usingAccount ? 'Account' : 'Party'} → Narration{tab.kind === 'bank' ? ' → Cheque No.' : ''} → Amount, then saves and starts the next voucher. Ctrl+S saves, Ctrl+P prints the draft.
         </p>
       </div>
       <SimpleReportModal
@@ -5506,11 +5519,15 @@ function VoucherEntryForm({ tab, onSavedClose }) {
         title={voucherTitle(buildDraftPayment())}
         buildPdfDoc={() => buildVoucherPdf(buildDraftPayment())}
         excelData={{
-          columns: ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Narration', 'Amount'],
+          columns: tab.kind === 'bank'
+            ? ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Cheque No.', 'Narration', 'Amount']
+            : ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Narration', 'Amount'],
           rows: [[
             savedNo || previewNo || 'DRAFT', formatDate(date), usingAccount ? (expenseAccount?.name || '') : (party?.name || ''),
             accounts.find((a) => a.id === cashBankAccountId)?.name || '',
-            tab.kind === 'cash' ? 'cash' : method, notes, Number(amount) || 0,
+            tab.kind === 'cash' ? 'cash' : method,
+            ...(tab.kind === 'bank' ? [chequeNo || ''] : []),
+            notes, Number(amount) || 0,
           ]],
         }}
       />
@@ -5546,10 +5563,17 @@ async function buildVoucherPdf(payment) {
   doc.text(`Date: ${formatDate(payment.payment_date)}   ${payment.direction === 'receipt' ? 'Received from' : 'Paid to'}: ${paymentRecipientLabel(payment)}`, textX, 29);
   doc.text(`Generated ${formatDate(new Date())}`, doc.internal.pageSize.getWidth() - 14, 16, { align: 'right' });
 
+  const hasCheque = !!payment.cheque_no;
   autoTable(doc, {
     startY: 36,
-    head: [[payment.direction === 'receipt' ? 'Received from' : 'Paid to', 'Account', 'Method', 'Narration', 'Amount']],
-    body: [[paymentRecipientLabel(payment), payment.chart_of_accounts?.name || '', payment.method || '', payment.notes || '', formatPkr(payment.amount)]],
+    head: [[
+      payment.direction === 'receipt' ? 'Received from' : 'Paid to', 'Account', 'Method',
+      ...(hasCheque ? ['Cheque No.'] : []), 'Narration', 'Amount',
+    ]],
+    body: [[
+      paymentRecipientLabel(payment), payment.chart_of_accounts?.name || '', payment.method || '',
+      ...(hasCheque ? [payment.cheque_no] : []), payment.notes || '', formatPkr(payment.amount),
+    ]],
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 9, cellPadding: 3 },
     didDrawPage: () => drawPdfFooter(doc),
@@ -5567,6 +5591,7 @@ function VoucherViewModal({ payment, onClose }) {
           <div><span className="text-gray-500">{payment.direction === 'receipt' ? 'Received from' : 'Paid to'}:</span> {paymentRecipientLabel(payment)}</div>
           <div><span className="text-gray-500">Account:</span> {payment.chart_of_accounts?.name}</div>
           <div><span className="text-gray-500">Method:</span> {payment.method}</div>
+          {payment.cheque_no && <div><span className="text-gray-500">Cheque No.:</span> {payment.cheque_no}</div>}
           <div><span className="text-gray-500">Status:</span> <Badge tone={payment.status === 'voided' ? 'danger' : 'success'}>{payment.status}</Badge></div>
         </div>
         {payment.notes && <div className="text-gray-500">Notes: {payment.notes}</div>}
@@ -5613,10 +5638,16 @@ function VoucherOldList({ tab }) {
     }
   }
   function handleExportExcel(row) {
+    const hasCheque = !!row.cheque_no;
     exportExcel({
       title: row.voucher_no,
-      columns: ['Date', 'Paid to / Received from', 'Account', 'Method', 'Amount'],
-      rows: [[formatDate(row.payment_date), paymentRecipientLabel(row), row.chart_of_accounts?.name || '', row.method || '', row.amount]],
+      columns: hasCheque
+        ? ['Date', 'Paid to / Received from', 'Account', 'Method', 'Cheque No.', 'Amount']
+        : ['Date', 'Paid to / Received from', 'Account', 'Method', 'Amount'],
+      rows: [[
+        formatDate(row.payment_date), paymentRecipientLabel(row), row.chart_of_accounts?.name || '', row.method || '',
+        ...(hasCheque ? [row.cheque_no] : []), row.amount,
+      ]],
     });
   }
   async function handleVoidConfirm(reason) {
@@ -5712,8 +5743,13 @@ function VoucherOldList({ tab }) {
         title={reportRow ? voucherTitle(reportRow) : ''}
         buildPdfDoc={() => buildVoucherPdf(reportRow)}
         excelData={reportRow ? {
-          columns: ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Narration', 'Amount'],
-          rows: [[reportRow.voucher_no, formatDate(reportRow.payment_date), paymentRecipientLabel(reportRow), reportRow.chart_of_accounts?.name || '', reportRow.method || '', reportRow.notes || '', reportRow.amount]],
+          columns: reportRow.cheque_no
+            ? ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Cheque No.', 'Narration', 'Amount']
+            : ['Voucher No.', 'Date', 'Paid to / Received from', 'Account', 'Method', 'Narration', 'Amount'],
+          rows: [[
+            reportRow.voucher_no, formatDate(reportRow.payment_date), paymentRecipientLabel(reportRow), reportRow.chart_of_accounts?.name || '', reportRow.method || '',
+            ...(reportRow.cheque_no ? [reportRow.cheque_no] : []), reportRow.notes || '', reportRow.amount,
+          ]],
         } : null}
       />
 
@@ -5738,8 +5774,8 @@ function emptyJvLine() {
 }
 
 function JournalVoucherModule() {
-  // Opening the page normally lands on the entries list.
-  const [mode, setMode] = useState('old');
+  // Opening the page always lands straight on the entry form, ready to type.
+  const [mode, setMode] = useState('new');
   return (
     <div>
       <div className="flex items-center justify-between mb-5">
