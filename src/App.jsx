@@ -468,6 +468,26 @@ async function fetchExpensesAndDrawings({ from, to }) {
   return { expenses, drawings };
 }
 
+async function fetchExpenseDrawingsBreakdown({ from, to, type }) {
+  const [{ data: accounts, error: e1 }, { data: entries, error: e2 }] = await Promise.all([
+    supabase.from('chart_of_accounts').select('id, name').eq('type', type),
+    supabase.from('ledger_entries').select('account_id, debit, credit').gte('entry_date', from).lte('entry_date', to),
+  ]);
+  if (e1) throw e1;
+  if (e2) throw e2;
+  const nameById = {};
+  (accounts || []).forEach((a) => { nameById[a.id] = a.name; });
+  const totals = {};
+  (entries || []).forEach((e) => {
+    if (!(e.account_id in nameById)) return;
+    totals[e.account_id] = (totals[e.account_id] || 0) + Number(e.debit) - Number(e.credit);
+  });
+  return Object.entries(totals)
+    .map(([id, amount]) => ({ id, name: nameById[id], amount }))
+    .filter((r) => Math.abs(r.amount) > 0.01)
+    .sort((a, b) => b.amount - a.amount);
+}
+
 async function fetchPartyBalances({ type, positiveOnly = false } = {}) {
   let q = supabase.from('v_party_balances').select().eq('type', type);
   const { data, error } = await q.order('balance', { ascending: false });
@@ -2374,9 +2394,45 @@ function DashboardScreen({ onNavigate }) {
   const [payablesModalOpen, setPayablesModalOpen] = useState(false);
   const [otherReceivablesModalOpen, setOtherReceivablesModalOpen] = useState(false);
   const [otherPayablesModalOpen, setOtherPayablesModalOpen] = useState(false);
+  const [paymentReceivedModalOpen, setPaymentReceivedModalOpen] = useState(false);
+  const [paymentMadeModalOpen, setPaymentMadeModalOpen] = useState(false);
+  const [expensesModalOpen, setExpensesModalOpen] = useState(false);
+  const [drawingsModalOpen, setDrawingsModalOpen] = useState(false);
+  const [paymentReceivedRows, setPaymentReceivedRows] = useState(null);
+  const [paymentMadeRows, setPaymentMadeRows] = useState(null);
+  const [expensesRows, setExpensesRows] = useState(null);
+  const [drawingsRows, setDrawingsRows] = useState(null);
   // Hidden by default every time the dashboard opens — pure client-side
   // toggle (no refetch), never persisted, so a fresh open always re-masks.
   const [balancesVisible, setBalancesVisible] = useState(false);
+
+  useEffect(() => {
+    if (!paymentReceivedModalOpen) { setPaymentReceivedRows(null); return; }
+    let alive = true;
+    fetchPayments({ direction: 'receipt', from, to }).then((r) => { if (alive) setPaymentReceivedRows(r); });
+    return () => { alive = false; };
+  }, [paymentReceivedModalOpen, from, to]);
+
+  useEffect(() => {
+    if (!paymentMadeModalOpen) { setPaymentMadeRows(null); return; }
+    let alive = true;
+    fetchPayments({ direction: 'payment', from, to }).then((r) => { if (alive) setPaymentMadeRows(r); });
+    return () => { alive = false; };
+  }, [paymentMadeModalOpen, from, to]);
+
+  useEffect(() => {
+    if (!expensesModalOpen) { setExpensesRows(null); return; }
+    let alive = true;
+    fetchExpenseDrawingsBreakdown({ from, to, type: 'expense' }).then((r) => { if (alive) setExpensesRows(r); });
+    return () => { alive = false; };
+  }, [expensesModalOpen, from, to]);
+
+  useEffect(() => {
+    if (!drawingsModalOpen) { setDrawingsRows(null); return; }
+    let alive = true;
+    fetchExpenseDrawingsBreakdown({ from, to, type: 'drawings' }).then((r) => { if (alive) setDrawingsRows(r); });
+    return () => { alive = false; };
+  }, [drawingsModalOpen, from, to]);
 
   useEffect(() => {
     let alive = true;
@@ -2580,15 +2636,19 @@ function DashboardScreen({ onNavigate }) {
       {/* Row 4 — Payment */}
       <SectionHeading>Payment</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
-        <StatCard title="Payment Received" icon={ArrowUpRight} color={THEME.success} value={formatPkr(paymentsSummary.received)} />
-        <StatCard title="Payment Made" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(paymentsSummary.made)} />
+        <StatCard title="Payment Received" icon={ArrowUpRight} color={THEME.success} value={formatPkr(paymentsSummary.received)}
+          onClick={() => setPaymentReceivedModalOpen(true)} sub="Tap for voucher-wise details" />
+        <StatCard title="Payment Made" icon={ArrowDownRight} color={THEME.danger} value={formatPkr(paymentsSummary.made)}
+          onClick={() => setPaymentMadeModalOpen(true)} sub="Tap for voucher-wise details" />
       </div>
 
       {/* Row 5 — Expense & Drawings */}
       <SectionHeading>Expense &amp; Drawings</SectionHeading>
       <div className="grid grid-cols-2 gap-4">
-        <StatCard title="Total Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(expensesAndDrawings.expenses)} />
-        <StatCard title="Drawings" icon={Receipt} color={THEME.amber} value={formatPkr(expensesAndDrawings.drawings)} />
+        <StatCard title="Total Expenses" icon={Receipt} color={THEME.amber} value={formatPkr(expensesAndDrawings.expenses)}
+          onClick={() => setExpensesModalOpen(true)} sub="Tap for account-wise breakdown" />
+        <StatCard title="Drawings" icon={Receipt} color={THEME.amber} value={formatPkr(expensesAndDrawings.drawings)}
+          onClick={() => setDrawingsModalOpen(true)} sub="Tap for account-wise breakdown" />
       </div>
 
       {/* Row 6 — Historical financial analysis */}
@@ -2726,6 +2786,64 @@ function DashboardScreen({ onNavigate }) {
           <div key={a.id} className="flex items-center justify-between px-1 py-3">
             <span className="text-sm">{a.name}</span>
             <span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(-a.balance)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={paymentReceivedModalOpen}
+        onClose={() => setPaymentReceivedModalOpen(false)}
+        title="Payment received"
+        rows={paymentReceivedRows}
+        renderRow={(p) => (
+          <div key={p.id} className="flex items-center justify-between px-1 py-3">
+            <div>
+              <div className="text-sm">{p.voucher_no}</div>
+              <div className="text-xs text-gray-500">{formatDate(p.payment_date)} &middot; {paymentRecipientLabel(p)}</div>
+            </div>
+            <span className="text-sm font-semibold" style={{ color: THEME.success }}>{formatPkr(p.amount)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={paymentMadeModalOpen}
+        onClose={() => setPaymentMadeModalOpen(false)}
+        title="Payment made"
+        rows={paymentMadeRows}
+        renderRow={(p) => (
+          <div key={p.id} className="flex items-center justify-between px-1 py-3">
+            <div>
+              <div className="text-sm">{p.voucher_no}</div>
+              <div className="text-xs text-gray-500">{formatDate(p.payment_date)} &middot; {paymentRecipientLabel(p)}</div>
+            </div>
+            <span className="text-sm font-semibold" style={{ color: THEME.danger }}>{formatPkr(p.amount)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={expensesModalOpen}
+        onClose={() => setExpensesModalOpen(false)}
+        title="Expenses — account-wise"
+        rows={expensesRows}
+        renderRow={(r) => (
+          <div key={r.id} className="flex items-center justify-between px-1 py-3">
+            <span className="text-sm">{r.name}</span>
+            <span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(r.amount)}</span>
+          </div>
+        )}
+      />
+
+      <AccountListModal
+        open={drawingsModalOpen}
+        onClose={() => setDrawingsModalOpen(false)}
+        title="Drawings — account-wise"
+        rows={drawingsRows}
+        renderRow={(r) => (
+          <div key={r.id} className="flex items-center justify-between px-1 py-3">
+            <span className="text-sm">{r.name}</span>
+            <span className="text-sm font-semibold" style={{ color: THEME.amber }}>{formatPkr(r.amount)}</span>
           </div>
         )}
       />
