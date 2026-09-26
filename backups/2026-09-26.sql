@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict T7ZkLgLB06vgF9oiZFv2IzF4TS18QEvyImaxEG2eIUfnpzjzXU8b0zCfdUvrUNy
+\restrict 723IRgy5MRdhAhH52GpXYIwIiSdSQWyFnodRxGPeXVxSVhhVIHNyYoP9pAaedtV
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
@@ -149,7 +149,9 @@ begin
 
   select ledger_account_id into v_party_account from public.parties where id = p_party_id;
   select id into v_trade_account from public.chart_of_accounts
-    where type = case when p_invoice_type in ('sale','sale_order','sale_return') then 'sales' else 'purchase' end limit 1;
+    where type = case when p_invoice_type in ('sale','sale_order','sale_return') then 'sales' else 'purchase' end
+      and brand_key = p_brand_key
+    limit 1;
 
   v_invoice_no := public.next_invoice_no(p_invoice_type);
 
@@ -597,6 +599,144 @@ $$;
 
 
 --
+-- Name: delete_invoice(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.delete_invoice(p_invoice_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  v_invoice public.invoices;
+  v_page text;
+  v_items jsonb;
+  v_party_name text;
+  v_performer_name text;
+begin
+  select * into v_invoice from public.invoices where id = p_invoice_id;
+  if v_invoice is null then raise exception 'Invoice not found'; end if;
+  if v_invoice.status <> 'voided' then raise exception 'Only a voided document can be deleted — void it first'; end if;
+
+  v_page := case when v_invoice.invoice_type in ('sale', 'sale_order', 'sale_return') then 'entry_sale' else 'entry_purchase' end;
+  if not public.has_permission(v_page, 'approve') then
+    raise exception 'Not permitted to delete % documents', v_invoice.invoice_type;
+  end if;
+
+  select coalesce(jsonb_agg(to_jsonb(ii) - 'invoice_id'), '[]'::jsonb) into v_items
+    from public.invoice_items ii where ii.invoice_id = v_invoice.id;
+  select name into v_party_name from public.parties where id = v_invoice.party_id;
+  select coalesce(full_name, username) into v_performer_name from public.profiles where id = auth.uid();
+
+  insert into public.document_audit_log (action, doc_family, doc_type, doc_no, doc_date, brand_key, party_name, amount, performed_by, performed_by_name, snapshot)
+  values ('deleted', 'invoice', v_invoice.invoice_type, v_invoice.invoice_no, v_invoice.invoice_date, v_invoice.brand_key, v_party_name, v_invoice.total_amount, auth.uid(), v_performer_name,
+    jsonb_build_object('invoice', to_jsonb(v_invoice), 'items', v_items));
+
+  delete from public.ledger_entries where reference_id = v_invoice.id
+    and reference_type in ('invoice', 'void');
+  delete from public.stock_movements where reference_id = v_invoice.id
+    and reference_type in ('purchase_bill', 'purchase_return', 'sale_bill', 'sale_return', 'void');
+
+  begin
+    delete from public.invoices where id = p_invoice_id;
+  exception when foreign_key_violation then
+    raise exception 'Cannot delete — another document (a linked order/bill, a payment, or a fulfilled reservation) still references this one';
+  end;
+end; $$;
+
+
+--
+-- Name: delete_journal_voucher(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.delete_journal_voucher(p_voucher_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  v_voucher public.journal_vouchers;
+  v_lines jsonb;
+  v_performer_name text;
+begin
+  select * into v_voucher from public.journal_vouchers where id = p_voucher_id;
+  if v_voucher is null then raise exception 'Journal voucher not found'; end if;
+  if v_voucher.status <> 'voided' then raise exception 'Only a voided journal voucher can be deleted — void it first'; end if;
+  if not public.has_permission('entry_jv', 'approve') then
+    raise exception 'Not permitted to delete journal vouchers';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'account_name', coa.name, 'debit', jvl.debit, 'credit', jvl.credit, 'narration', jvl.line_narration
+  ) order by jvl.id), '[]'::jsonb) into v_lines
+  from public.journal_voucher_lines jvl
+  left join public.chart_of_accounts coa on coa.id = jvl.account_id
+  where jvl.voucher_id = v_voucher.id;
+
+  select coalesce(full_name, username) into v_performer_name from public.profiles where id = auth.uid();
+
+  insert into public.document_audit_log (action, doc_family, doc_type, doc_no, doc_date, amount, performed_by, performed_by_name, snapshot)
+  values ('deleted', 'journal_voucher', 'jv', v_voucher.voucher_no, v_voucher.voucher_date, v_voucher.total_amount, auth.uid(), v_performer_name,
+    jsonb_build_object('voucher', to_jsonb(v_voucher), 'lines', v_lines));
+
+  delete from public.ledger_entries where reference_id = v_voucher.id
+    and reference_type in ('journal_voucher', 'void');
+
+  delete from public.journal_vouchers where id = p_voucher_id;
+end; $$;
+
+
+--
+-- Name: delete_payment(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.delete_payment(p_payment_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  v_payment public.payments;
+  v_kind text;
+  v_doc_type text;
+  v_party_name text;
+  v_cash_bank_name text;
+  v_direct_account_name text;
+  v_performer_name text;
+begin
+  select * into v_payment from public.payments where id = p_payment_id;
+  if v_payment is null then raise exception 'Voucher not found'; end if;
+  if v_payment.status <> 'voided' then raise exception 'Only a voided voucher can be deleted — void it first'; end if;
+  if not public.has_permission('entry_voucher', 'approve') then
+    raise exception 'Not permitted to delete vouchers';
+  end if;
+
+  select cash_bank_kind, name into v_kind, v_cash_bank_name from public.chart_of_accounts where id = v_payment.cash_bank_account_id;
+  v_doc_type := case
+    when v_payment.direction = 'receipt' and v_kind = 'bank' then 'brv'
+    when v_payment.direction = 'receipt' then 'crv'
+    when v_payment.direction = 'payment' and v_kind = 'bank' then 'bpv'
+    else 'cpv'
+  end;
+  select name into v_party_name from public.parties where id = v_payment.party_id;
+  select name into v_direct_account_name from public.chart_of_accounts where id = v_payment.direct_account_id;
+  select coalesce(full_name, username) into v_performer_name from public.profiles where id = auth.uid();
+
+  insert into public.document_audit_log (action, doc_family, doc_type, doc_no, doc_date, party_name, amount, performed_by, performed_by_name, snapshot)
+  values ('deleted', 'payment', v_doc_type, v_payment.voucher_no, v_payment.payment_date,
+    coalesce(v_party_name, v_direct_account_name), v_payment.amount, auth.uid(), v_performer_name,
+    jsonb_build_object('payment', to_jsonb(v_payment), 'cash_bank_account_name', v_cash_bank_name,
+      'party_name', v_party_name, 'direct_account_name', v_direct_account_name));
+
+  delete from public.ledger_entries where reference_id = v_payment.id
+    and reference_type in ('payment', 'void');
+
+  begin
+    delete from public.payments where id = p_payment_id;
+  exception when foreign_key_violation then
+    raise exception 'Cannot delete — another document still references this voucher';
+  end;
+end; $$;
+
+
+--
 -- Name: email_for_username(text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -707,6 +847,24 @@ end; $$;
 
 
 --
+-- Name: has_any_permission(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.has_any_permission() RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+  select
+    coalesce((select is_admin from public.profiles where id = auth.uid()), false)
+    or exists (
+      select 1 from public.page_permissions pp
+      where pp.user_id = auth.uid()
+        and (pp.can_view or pp.can_create or pp.can_edit or pp.can_approve)
+    );
+$$;
+
+
+--
 -- Name: has_permission(text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -790,10 +948,73 @@ end; $$;
 
 
 --
--- Name: record_payment(date, uuid, text, numeric, text, uuid, uuid, text, uuid); Type: FUNCTION; Schema: public; Owner: -
+-- Name: peek_next_doc_no(text); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.record_payment(p_payment_date date, p_party_id uuid, p_direction text, p_amount numeric, p_method text, p_cash_bank_account_id uuid, p_linked_invoice_id uuid, p_notes text, p_direct_account_id uuid DEFAULT NULL::uuid) RETURNS uuid
+CREATE FUNCTION public.peek_next_doc_no(p_doc_kind text) RETURNS text
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  v_last bigint;
+  v_called boolean;
+  v_next bigint;
+begin
+  if p_doc_kind = 'sale' then
+    select last_value, is_called into v_last, v_called from public.sale_invoice_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'SI-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'purchase' then
+    select last_value, is_called into v_last, v_called from public.purchase_invoice_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'PI-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'purchase_order' then
+    select last_value, is_called into v_last, v_called from public.purchase_order_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'PO-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'purchase_return' then
+    select last_value, is_called into v_last, v_called from public.purchase_return_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'PR-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'sale_order' then
+    select last_value, is_called into v_last, v_called from public.sale_order_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'SO-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'sale_return' then
+    select last_value, is_called into v_last, v_called from public.sale_return_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'SR-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'brv' then
+    select last_value, is_called into v_last, v_called from public.brv_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'BRV-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'crv' then
+    select last_value, is_called into v_last, v_called from public.crv_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'CRV-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'bpv' then
+    select last_value, is_called into v_last, v_called from public.bpv_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'BPV-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'cpv' then
+    select last_value, is_called into v_last, v_called from public.cpv_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'CPV-' || lpad(v_next::text, 2, '0');
+  elsif p_doc_kind = 'jv' then
+    select last_value, is_called into v_last, v_called from public.jv_seq;
+    v_next := case when v_called then v_last + 1 else v_last end;
+    return 'JV-' || lpad(v_next::text, 2, '0');
+  else
+    raise exception 'Unknown document kind: %', p_doc_kind;
+  end if;
+end; $$;
+
+
+--
+-- Name: record_payment(date, uuid, text, numeric, text, uuid, uuid, text, uuid, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.record_payment(p_payment_date date, p_party_id uuid, p_direction text, p_amount numeric, p_method text, p_cash_bank_account_id uuid, p_linked_invoice_id uuid, p_notes text, p_direct_account_id uuid DEFAULT NULL::uuid, p_cheque_no text DEFAULT NULL::text) RETURNS uuid
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
@@ -834,9 +1055,9 @@ begin
   v_voucher_no := public.next_voucher_no(p_direction, coalesce(v_kind, 'cash'));
 
   insert into public.payments (voucher_no, payment_date, party_id, direct_account_id, direction, amount, method,
-                                cash_bank_account_id, linked_invoice_id, notes, created_by)
+                                cash_bank_account_id, linked_invoice_id, notes, cheque_no, created_by)
   values (v_voucher_no, p_payment_date, p_party_id, p_direct_account_id, p_direction, p_amount, p_method,
-          p_cash_bank_account_id, p_linked_invoice_id, p_notes, auth.uid())
+          p_cash_bank_account_id, p_linked_invoice_id, p_notes, nullif(p_cheque_no, ''), auth.uid())
   returning id into v_payment_id;
 
   if p_direction = 'receipt' then
@@ -947,6 +1168,9 @@ declare
   v_party_account uuid;
   v_trade_account uuid;
   v_ledger_narration text;
+  v_old_items jsonb;
+  v_party_name text;
+  v_performer_name text;
 begin
   select * into v_invoice from public.invoices where id = p_invoice_id;
   if v_invoice is null then raise exception 'Document not found'; end if;
@@ -968,9 +1192,20 @@ begin
     end if;
   end loop;
 
+  select coalesce(jsonb_agg(to_jsonb(ii) - 'invoice_id'), '[]'::jsonb) into v_old_items
+    from public.invoice_items ii where ii.invoice_id = v_invoice.id;
+  select name into v_party_name from public.parties where id = v_invoice.party_id;
+  select coalesce(full_name, username) into v_performer_name from public.profiles where id = auth.uid();
+
+  insert into public.document_audit_log (action, doc_family, doc_type, doc_no, doc_date, brand_key, party_name, amount, performed_by, performed_by_name, snapshot)
+  values ('edited', 'invoice', v_invoice.invoice_type, v_invoice.invoice_no, v_invoice.invoice_date, v_invoice.brand_key, v_party_name, v_invoice.total_amount, auth.uid(), v_performer_name,
+    jsonb_build_object('invoice', to_jsonb(v_invoice), 'items', v_old_items));
+
   select ledger_account_id into v_party_account from public.parties where id = p_party_id;
   select id into v_trade_account from public.chart_of_accounts
-    where type = case when v_invoice.invoice_type in ('sale','sale_order','sale_return') then 'sales' else 'purchase' end limit 1;
+    where type = case when v_invoice.invoice_type in ('sale','sale_order','sale_return') then 'sales' else 'purchase' end
+      and brand_key = v_invoice.brand_key
+    limit 1;
 
   insert into public.ledger_entries (entry_date, account_id, party_id, debit, credit, reference_type, reference_id, narration, doc_no)
   select current_date, account_id, party_id, credit, debit, 'invoice_edit', v_invoice.id,
@@ -981,7 +1216,7 @@ begin
   select item_id, current_date, quantity_out, quantity_in, unit, 'invoice_edit', v_invoice.id
   from public.stock_movements
   where reference_id = v_invoice.id
-    and reference_type in ('purchase_bill','purchase_return','sale_bill','sale_return');
+    and reference_type in ('purchase_bill', 'purchase_return', 'sale_bill', 'sale_return');
 
   delete from public.invoice_items where invoice_id = v_invoice.id;
 
@@ -1327,6 +1562,7 @@ CREATE TABLE public.chart_of_accounts (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     cash_bank_kind text,
     parent_account_id uuid,
+    brand_key text,
     CONSTRAINT chart_of_accounts_cash_bank_kind_check CHECK (((cash_bank_kind IS NULL) OR (cash_bank_kind = ANY (ARRAY['cash'::text, 'bank'::text])))),
     CONSTRAINT chart_of_accounts_type_check CHECK ((type = ANY (ARRAY['sales'::text, 'purchase'::text, 'expense'::text, 'cash_bank'::text, 'party'::text, 'drawings'::text, 'asset'::text, 'liability'::text, 'capital'::text, 'income'::text])))
 );
@@ -1354,6 +1590,29 @@ CREATE SEQUENCE public.crv_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
+
+
+--
+-- Name: document_audit_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.document_audit_log (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    action text NOT NULL,
+    doc_family text NOT NULL,
+    doc_type text NOT NULL,
+    doc_no text NOT NULL,
+    doc_date date,
+    brand_key text,
+    party_name text,
+    amount numeric,
+    performed_by uuid,
+    performed_by_name text,
+    performed_at timestamp with time zone DEFAULT now() NOT NULL,
+    snapshot jsonb NOT NULL,
+    CONSTRAINT document_audit_log_action_check CHECK ((action = ANY (ARRAY['edited'::text, 'deleted'::text]))),
+    CONSTRAINT document_audit_log_doc_family_check CHECK ((doc_family = ANY (ARRAY['invoice'::text, 'payment'::text, 'journal_voucher'::text])))
+);
 
 
 --
@@ -1531,7 +1790,7 @@ CREATE TABLE public.ledger_entries (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     narration text,
     doc_no text,
-    CONSTRAINT ledger_entries_reference_type_check CHECK ((reference_type = ANY (ARRAY['invoice'::text, 'expense'::text, 'payment'::text, 'opening_balance'::text, 'void'::text, 'journal_voucher'::text])))
+    CONSTRAINT ledger_entries_reference_type_check CHECK ((reference_type = ANY (ARRAY['invoice'::text, 'invoice_edit'::text, 'expense'::text, 'payment'::text, 'opening_balance'::text, 'void'::text, 'journal_voucher'::text])))
 );
 
 
@@ -1549,7 +1808,7 @@ CREATE TABLE public.page_permissions (
     can_approve boolean DEFAULT false NOT NULL,
     granted_by uuid,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT page_permissions_page_key_check CHECK ((page_key = ANY (ARRAY['dashboard'::text, 'entry_voucher'::text, 'entry_jv'::text, 'entry_sale'::text, 'entry_purchase'::text, 'item_master'::text, 'party_master'::text, 'settings'::text])))
+    CONSTRAINT page_permissions_page_key_check CHECK ((page_key = ANY (ARRAY['dashboard'::text, 'entry_voucher'::text, 'entry_jv'::text, 'entry_sale'::text, 'entry_purchase'::text, 'item_master'::text, 'party_master'::text, 'reports'::text, 'settings'::text])))
 );
 
 
@@ -1597,6 +1856,7 @@ CREATE TABLE public.payments (
     voucher_no text,
     void_reason text,
     direct_account_id uuid,
+    cheque_no text,
     CONSTRAINT payments_direction_check CHECK ((direction = ANY (ARRAY['receipt'::text, 'payment'::text]))),
     CONSTRAINT payments_method_check CHECK ((method = ANY (ARRAY['cash'::text, 'bank_transfer'::text, 'cheque'::text, 'other'::text]))),
     CONSTRAINT payments_party_or_direct_account_check CHECK (((party_id IS NOT NULL) <> (direct_account_id IS NOT NULL))),
@@ -1822,42 +2082,60 @@ COPY public.brand_settings (id, brand_key, display_name, category, logo_url, add
 -- Data for Name: chart_of_accounts; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.chart_of_accounts (id, name, type, is_system, created_at, cash_bank_kind, parent_account_id) FROM stdin;
-6005ba1e-cd53-4805-9502-6a48a899f6eb	Sales	sales	t	2026-08-02 20:46:57.542673+00	\N	\N
-4d83866f-efb8-43d0-954a-b424f2711003	Purchase	purchase	t	2026-08-02 20:46:57.542673+00	\N	\N
-18a17032-5d3c-4f45-8731-7959254e37b0	Fuel & Transport	expense	t	2026-08-02 20:46:57.542673+00	\N	\N
-50201935-c3d5-4b05-8424-3f69c7b0507b	Rent	expense	t	2026-08-02 20:46:57.542673+00	\N	\N
-d05b4fa1-0ca1-4a2c-ab22-4342f93b0245	Salaries	expense	t	2026-08-02 20:46:57.542673+00	\N	\N
-1aea2139-d6a1-4581-b421-04dee3bb2234	Utilities	expense	t	2026-08-02 20:46:57.542673+00	\N	\N
-75d2313a-6eea-4ce3-bee0-232fcc06310e	Miscellaneous	expense	t	2026-08-02 20:46:57.542673+00	\N	\N
-46ff676e-30cb-49e1-901b-f714a0c05ed1	Cash in Hand	cash_bank	t	2026-08-02 20:46:57.542673+00	cash	\N
-8fd89e74-fc8e-4e1d-ba98-f837fd2e6bb6	Bank Account	cash_bank	t	2026-08-02 20:46:57.542673+00	bank	\N
-21c01cc6-ee96-4dcd-83c2-64871c947d95	AWAMI DYEING	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-a0a21a09-6446-4de1-adfe-3a8ff21ed57b	GONDAL DYEING	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-15d11f17-44ee-4a3b-9ace-7fd690a91023	BHUTTA DYEING	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-85f9697c-6bc7-466e-bc6e-bd62edab7b56	MUNAWAR INDUSTRIES	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-e0069fdb-38ed-4475-b4e7-a51af40322ee	BLUE HORIZON	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-460aa95d-1519-4435-b641-3e76f6e0016e	NEKA PAK	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-4ebee95b-f8ec-43c6-be50-5879ecf064e3	ZAK ENTERPRISES	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-9682f10e-5b8d-46d2-99d0-98d8010a7f8d	UMER PLASTIC	party	f	2026-08-06 21:18:20.995209+00	\N	\N
-5a6b672c-cf6a-40ed-96d6-1c683bf71b65	Owner's Drawings	drawings	t	2026-08-09 19:56:17.864476+00	\N	\N
-d5cbfa4c-bc77-4560-8995-b2f8928aff38	Opening Balance Equity	capital	t	2026-08-11 16:37:27.579308+00	\N	\N
-425dc932-ca69-4c03-97fa-b08750e4851a	FORTA	party	f	2026-08-17 21:32:32.707225+00	\N	\N
-e6a42291-8735-4930-ac69-9669207641a0	SEDATE	party	f	2026-08-17 21:32:32.707225+00	\N	\N
-f45cdab6-64d0-47e8-b800-6de1b9921c90	Loans Receivable	asset	f	2026-08-17 21:32:32.707225+00	\N	\N
-f8c3d4ac-ec1f-4c5f-9007-e829c6bf7ab5	Loans Payables	liability	f	2026-08-17 21:32:32.707225+00	\N	\N
-d2a9abd2-6f4b-4eeb-85e5-77eb64b3a894	IVAR	party	f	2026-08-17 21:36:50.502286+00	\N	\N
-711995c7-e7c2-456b-a80b-85485676ff2d	DANISH SHAKIR	party	f	2026-08-17 21:36:50.502286+00	\N	\N
-a5a3e8ce-c000-4e8a-8b0b-bec262abbe32	ZUBAIR ENTERPRISE	party	f	2026-08-17 21:36:50.502286+00	\N	\N
-b2e3af17-88bf-4aa9-95ed-d58b6d8cb7f9	SKILL SPORTS	party	f	2026-08-17 21:36:50.502286+00	\N	\N
-4e15577b-2ac6-486d-ab03-9a1a438a21b2	Committee Receivable	asset	f	2026-08-17 21:42:01.509215+00	\N	\N
-546958e7-c3e6-415a-ba96-04534550a760	MEHMOOD KARACHI	party	f	2026-08-17 21:44:51.107649+00	\N	\N
-ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	RS PLASTIC	party	f	2026-08-17 21:48:22.363723+00	\N	\N
-34b3947f-3d7a-4a6e-ad06-74bdfa09d55c	Zakat	drawings	f	2026-08-17 22:31:03.552244+00	\N	\N
-c1279a3f-8815-4485-b393-96778ef5a521	Donation	expense	f	2026-08-17 22:31:03.552244+00	\N	\N
-c601aae0-067b-436a-9008-626e12fedc44	Cash Sale	party	f	2026-08-19 18:20:12.812449+00	\N	\N
-e5de6500-c628-4add-a1ab-a659937feea2	Naeem Printer	party	f	2026-08-22 15:32:26.829556+00	\N	\N
-8db3d249-e3fd-4feb-8637-8256201733d6	SAQLAIN SHEIKH	party	f	2026-08-23 19:27:04.287546+00	\N	\N
+COPY public.chart_of_accounts (id, name, type, is_system, created_at, cash_bank_kind, parent_account_id, brand_key) FROM stdin;
+18a17032-5d3c-4f45-8731-7959254e37b0	Fuel & Transport	expense	t	2026-08-02 20:46:57.542673+00	\N	\N	\N
+50201935-c3d5-4b05-8424-3f69c7b0507b	Rent	expense	t	2026-08-02 20:46:57.542673+00	\N	\N	\N
+d05b4fa1-0ca1-4a2c-ab22-4342f93b0245	Salaries	expense	t	2026-08-02 20:46:57.542673+00	\N	\N	\N
+1aea2139-d6a1-4581-b421-04dee3bb2234	Utilities	expense	t	2026-08-02 20:46:57.542673+00	\N	\N	\N
+75d2313a-6eea-4ce3-bee0-232fcc06310e	Miscellaneous	expense	t	2026-08-02 20:46:57.542673+00	\N	\N	\N
+46ff676e-30cb-49e1-901b-f714a0c05ed1	Cash in Hand	cash_bank	t	2026-08-02 20:46:57.542673+00	cash	\N	\N
+8fd89e74-fc8e-4e1d-ba98-f837fd2e6bb6	Bank Account	cash_bank	t	2026-08-02 20:46:57.542673+00	bank	\N	\N
+21c01cc6-ee96-4dcd-83c2-64871c947d95	AWAMI DYEING	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+a0a21a09-6446-4de1-adfe-3a8ff21ed57b	GONDAL DYEING	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+15d11f17-44ee-4a3b-9ace-7fd690a91023	BHUTTA DYEING	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+85f9697c-6bc7-466e-bc6e-bd62edab7b56	MUNAWAR INDUSTRIES	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+e0069fdb-38ed-4475-b4e7-a51af40322ee	BLUE HORIZON	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+460aa95d-1519-4435-b641-3e76f6e0016e	NEKA PAK	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+4ebee95b-f8ec-43c6-be50-5879ecf064e3	ZAK ENTERPRISES	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+9682f10e-5b8d-46d2-99d0-98d8010a7f8d	UMER PLASTIC	party	f	2026-08-06 21:18:20.995209+00	\N	\N	\N
+5a6b672c-cf6a-40ed-96d6-1c683bf71b65	Owner's Drawings	drawings	t	2026-08-09 19:56:17.864476+00	\N	\N	\N
+d5cbfa4c-bc77-4560-8995-b2f8928aff38	Opening Balance Equity	capital	t	2026-08-11 16:37:27.579308+00	\N	\N	\N
+425dc932-ca69-4c03-97fa-b08750e4851a	FORTA	party	f	2026-08-17 21:32:32.707225+00	\N	\N	\N
+e6a42291-8735-4930-ac69-9669207641a0	SEDATE	party	f	2026-08-17 21:32:32.707225+00	\N	\N	\N
+f45cdab6-64d0-47e8-b800-6de1b9921c90	Loans Receivable	asset	f	2026-08-17 21:32:32.707225+00	\N	\N	\N
+f8c3d4ac-ec1f-4c5f-9007-e829c6bf7ab5	Loans Payables	liability	f	2026-08-17 21:32:32.707225+00	\N	\N	\N
+d2a9abd2-6f4b-4eeb-85e5-77eb64b3a894	IVAR	party	f	2026-08-17 21:36:50.502286+00	\N	\N	\N
+711995c7-e7c2-456b-a80b-85485676ff2d	DANISH SHAKIR	party	f	2026-08-17 21:36:50.502286+00	\N	\N	\N
+a5a3e8ce-c000-4e8a-8b0b-bec262abbe32	ZUBAIR ENTERPRISE	party	f	2026-08-17 21:36:50.502286+00	\N	\N	\N
+b2e3af17-88bf-4aa9-95ed-d58b6d8cb7f9	SKILL SPORTS	party	f	2026-08-17 21:36:50.502286+00	\N	\N	\N
+4e15577b-2ac6-486d-ab03-9a1a438a21b2	Committee Receivable	asset	f	2026-08-17 21:42:01.509215+00	\N	\N	\N
+546958e7-c3e6-415a-ba96-04534550a760	MEHMOOD KARACHI	party	f	2026-08-17 21:44:51.107649+00	\N	\N	\N
+ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	RS PLASTIC	party	f	2026-08-17 21:48:22.363723+00	\N	\N	\N
+34b3947f-3d7a-4a6e-ad06-74bdfa09d55c	Zakat	drawings	f	2026-08-17 22:31:03.552244+00	\N	\N	\N
+c1279a3f-8815-4485-b393-96778ef5a521	Donation	expense	f	2026-08-17 22:31:03.552244+00	\N	\N	\N
+c601aae0-067b-436a-9008-626e12fedc44	Cash Sale	party	f	2026-08-19 18:20:12.812449+00	\N	\N	\N
+e5de6500-c628-4add-a1ab-a659937feea2	Naeem Printer	party	f	2026-08-22 15:32:26.829556+00	\N	\N	\N
+8db3d249-e3fd-4feb-8637-8256201733d6	SAQLAIN SHEIKH	party	f	2026-08-23 19:27:04.287546+00	\N	\N	\N
+f381c993-3a45-4110-95c4-79702f855f1d	Faraz Sports Hosiery Section	party	f	2026-08-28 05:42:14.08759+00	\N	\N	\N
+f9e568c4-fbb6-4500-a222-1a7a53171d4c	FARAZ SPORTS DYEING	party	f	2026-08-28 07:27:07.207871+00	\N	\N	\N
+50e275b8-01bb-44a7-9443-8cedb5646dd7	WP international	party	f	2026-08-31 20:43:25.184859+00	\N	\N	\N
+28883430-1e5f-40ab-bf42-f340c229370a	Naveel soni	party	f	2026-08-31 20:56:43.077537+00	\N	\N	\N
+5fac2769-57db-4f6a-b240-d3dd906158be	Gulam Cheema plastic	party	f	2026-08-31 22:20:49.868317+00	\N	\N	\N
+04c19961-b817-440f-a92f-492ea308ea29	BCC 317	expense	f	2026-08-31 22:21:01.858098+00	\N	\N	\N
+b414cafa-9164-4c44-a264-fb62a28206c1	SKF PolyTex Sales	sales	f	2026-09-02 17:14:39.510316+00	\N	\N	skf_polytex
+1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	SKF PolyBags Sales	sales	f	2026-09-02 17:14:39.510316+00	\N	\N	skf_polybags
+93277cdf-159d-4bb9-9f4d-5ac2a9436f56	SKF PolyTex Purchase	purchase	f	2026-09-02 17:14:39.510316+00	\N	\N	skf_polytex
+97443ecd-e235-4fcf-b60c-7de5057553a2	SKF PolyBags Purchase	purchase	f	2026-09-02 17:14:39.510316+00	\N	\N	skf_polybags
+6005ba1e-cd53-4805-9502-6a48a899f6eb	Sales (Opening Balance)	sales	t	2026-08-02 20:46:57.542673+00	\N	\N	\N
+4d83866f-efb8-43d0-954a-b424f2711003	Purchase (Opening Balance)	purchase	t	2026-08-02 20:46:57.542673+00	\N	\N	\N
+\.
+
+
+--
+-- Data for Name: document_audit_log; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.document_audit_log (id, action, doc_family, doc_type, doc_no, doc_date, brand_key, party_name, amount, performed_by, performed_by_name, performed_at, snapshot) FROM stdin;
 \.
 
 
@@ -1874,7 +2152,7 @@ COPY public.expenses (id, expense_date, expense_account_id, cash_bank_account_id
 --
 
 COPY public.heartbeat (id, pinged_at) FROM stdin;
-1	2026-08-25 01:22:20+00
+1	2026-09-25 04:01:07+00
 \.
 
 
@@ -1900,6 +2178,32 @@ de05bad7-ea20-4493-bc03-ef5356f0b4a1	35a918b0-1af8-4197-bfb2-15292f1e3825	50	KG	
 e2db07db-2de3-4486-83ae-007dadc7d3e1	beefd98a-d86c-49af-b224-a977eb0dbcc3	150	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Walnut 	270-280 
 f909cfbc-6154-47a8-b804-cc4dce480156	beefd98a-d86c-49af-b224-a977eb0dbcc3	150	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Grey	270-280 
 1e8143cf-2b25-40dd-afed-748318647d60	beefd98a-d86c-49af-b224-a977eb0dbcc3	150	KG	1450	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Off White	270-280
+c47e4942-5971-48d6-bc62-803a95da1786	2af26f0a-2772-4fbf-ada3-7fd24f412095	30	KG	820	PP	bc16062b-8939-428a-8872-7a6d4313be26	10×14	\N	\N	\N	\N
+108a0954-008c-4f0d-ab09-59da67692be4	42d4600a-20e0-4681-907a-42e33861d4bc	1600	PCS	65	Flyers	495d1db9-95b6-4be4-9268-226a56554d7a	\N	\N	\N	\N	\N
+8972c8f7-bb8c-4211-98ff-f68ee92a5b3a	42d4600a-20e0-4681-907a-42e33861d4bc	3	PCS	1500	Screens	f2fd52a8-be5e-469d-970a-4e53f9925494	\N	\N	\N	\N	\N
+2c45e5aa-c109-49f9-ab47-ebad0d68d827	eb802a96-5a6e-4945-9a9e-b4e136711362	1200	PCS	35	Eva bag	9183c9b2-6fd5-4057-a8aa-b5e264312127	\N	\N	\N	\N	\N
+c5f0c4cc-e3b7-48aa-96c6-791b56780a84	eb802a96-5a6e-4945-9a9e-b4e136711362	1	PCS	1000	Screens	f2fd52a8-be5e-469d-970a-4e53f9925494	\N	\N	\N	\N	\N
+546f3ef5-6940-48e8-a2bc-803e0610d6f8	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	58.35	KG	760	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	04-08-26	\N	\N	\N	\N
+9d48ae84-334d-4659-a794-9bb7320d65dc	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	151.7	KG	760	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	18-08-26	\N	\N	\N	\N
+d9a1f326-6dfc-42a2-ba5e-7949dd505f51	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	120	KG	760	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	17-08-26	\N	\N	\N	\N
+86ef6fba-78aa-4997-9ddf-17590cfbd344	12f790cb-3295-41cd-b7b3-bc4c449d236f	60	KG	820	PP	bc16062b-8939-428a-8872-7a6d4313be26	\N	\N	\N	\N	\N
+7ee9e3f0-a7e6-4a65-8a94-8e1a1f63c0dc	f2e7eca9-ca09-4c2e-be49-ae68b89ce3e1	298.35	KG	780	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	\N	\N	\N	\N	\N
+2679985f-1c85-48d3-93c0-2f0753dbff35	f2e7eca9-ca09-4c2e-be49-ae68b89ce3e1	85.7	KG	780	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	\N	\N	\N	\N	\N
+15f4a4ed-f8e8-49cf-be97-405714375d7e	800635de-c64c-4384-b623-201051c0b016	304.3	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Black	\N
+2ac2f97e-8db7-4a17-9d74-93b7e98d0258	800635de-c64c-4384-b623-201051c0b016	171.5	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Navy 193932 TPG	\N
+09c54c9d-6f97-4522-805c-709482a899b7	800635de-c64c-4384-b623-201051c0b016	158.4	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Frost Grey TPG 170000	\N
+8f9384a5-33b6-453f-a1c0-d81d3d509347	800635de-c64c-4384-b623-201051c0b016	111	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Walnut TPG 181112	\N
+6fab865b-3209-4642-a917-68bf8351011c	800635de-c64c-4384-b623-201051c0b016	133.7	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Merlot TPG 191534	\N
+8d4e6ea0-bc0b-4e61-99fd-e1d05b2d66bb	7a7537f6-a64d-42c9-8750-94b1073e5ba0	1498.8	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	36×60 Mix	\N	\N	\N	\N
+cb9b6563-3328-4d1f-a0a0-9159f7e6e5e9	7a7537f6-a64d-42c9-8750-94b1073e5ba0	140.95	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	Reel 26"	\N	\N	\N	\N
+ede04511-afcf-4c25-ad56-dee23847f745	e7396391-efd6-47b4-98e0-2c21e0e6b134	24.4	KG	2500	Fabric	9307a034-5509-4f0c-9674-d948f7cd7ece	\N	\N	\N	\N	\N
+3a5da18f-d669-48f8-ae96-6f4e4e640526	e8d8525c-05dc-4be9-b34f-4215739127d1	38	KG	820	PP	bc16062b-8939-428a-8872-7a6d4313be26	10×12 Tape	\N	\N	\N	\N
+00aef5a0-780b-4c0f-88ed-edb0cdc7dfbe	2af7d047-2bf3-4ca9-a2cc-54de244fb80f	30	KG	820	PP	bc16062b-8939-428a-8872-7a6d4313be26	12×14 Tape	\N	\N	\N	\N
+aa208e81-d1f4-4560-af95-8dc49d9091a1	2af7d047-2bf3-4ca9-a2cc-54de244fb80f	30	KG	820	PP	bc16062b-8939-428a-8872-7a6d4313be26	14×18	\N	\N	\N	\N
+8e823b86-f743-4c5a-9487-546920cfa273	0f3c00aa-1ed9-4cf7-b922-f4742b83352b	302.4	KG	790	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	17/09/2026	\N	\N	\N	\N
+23fdd040-0a57-4f41-8d05-4895e702d7cf	0f3c00aa-1ed9-4cf7-b922-f4742b83352b	153.1	KG	790	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	19/09/2026	\N	\N	\N	\N
+49583254-3e8c-40bc-a069-3f6ea99d9ac4	ce232888-9819-4d54-9640-cce5c9095487	274.85	KG	680	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	Polybag 30*50.  11 bags	\N	\N	\N	\N
+fb5dcb71-6ea8-4281-96c9-b8bfd2607763	ce232888-9819-4d54-9640-cce5c9095487	259.65	KG	680	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	9 bags 40*60	\N	\N	\N	\N
 \.
 
 
@@ -1908,10 +2212,23 @@ f909cfbc-6154-47a8-b804-cc4dce480156	beefd98a-d86c-49af-b224-a977eb0dbcc3	150	KG
 --
 
 COPY public.invoices (id, invoice_no, invoice_type, brand_key, category, party_id, invoice_date, total_amount, status, voided_at, voided_by, void_reason, created_by, created_at, supplier_invoice_no, linked_order_id, transport_charges, loading_charges, discount_amount, tax_amount, customer_po_no, narration) FROM stdin;
+12f790cb-3295-41cd-b7b3-bc4c449d236f	SI-06	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-09-02	49200	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-02 16:10:23.889506+00	\N	\N	0	0	0	0	\N	\N
+f2e7eca9-ca09-4c2e-be49-ae68b89ce3e1	SI-07	sale	skf_polybags	polybags	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	2026-09-07	299559.00	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-07 12:40:04.318027+00	\N	\N	0	0	0	0	\N	\N
+800635de-c64c-4384-b623-201051c0b016	SI-08	sale	skf_polytex	fabric	4b3d374d-0009-4eb5-bb4d-b91eedba0505	2026-09-07	1362295.0	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-07 21:30:52.696744+00	\N	\N	0	0	0	0	\N	\N
+7a7537f6-a64d-42c9-8750-94b1073e5ba0	SI-09	sale	skf_polybags	polybags	15f0a516-f34b-41ce-80df-e21cc0554b9a	2026-09-17	983850.00	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-17 20:25:18.668004+00	\N	\N	0	0	0	0	\N	\N
+e7396391-efd6-47b4-98e0-2c21e0e6b134	SI-10	sale	skf_polytex	fabric	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	2026-09-18	61000.0	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-18 07:05:08.578128+00	\N	\N	0	0	0	0	\N	\N
+e8d8525c-05dc-4be9-b34f-4215739127d1	SI-11	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-09-19	31160	voided	2026-09-21 05:45:04.886335+00	3b485a4c-5dcb-4a33-885c-7a9f62427783	Incomplete	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-21 05:43:25.929323+00	\N	\N	0	0	0	0	\N	\N
+2af7d047-2bf3-4ca9-a2cc-54de244fb80f	SI-12	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-09-19	49200	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-21 05:46:40.40321+00	\N	\N	0	0	0	0	\N	\N
+0f3c00aa-1ed9-4cf7-b922-f4742b83352b	SI-13	sale	skf_polybags	polybags	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	2026-09-21	359845.0	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-21 07:29:09.27207+00	\N	\N	0	0	0	0	\N	\N
 68987bdb-747f-4263-b7cb-f496f4582025	SO-01	sale_order	skf_polytex	fabric	4b3d374d-0009-4eb5-bb4d-b91eedba0505	2026-08-04	1162500	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-18 21:57:52.833678+00	\N	\N	0	0	0	0	\N	\N
 aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	PI-03	purchase	skf_polybags	polybags	3df7c6fc-b219-4436-99c4-4caba186a5ae	2026-08-17	500000	voided	2026-08-21 17:16:12.283392+00	3b485a4c-5dcb-4a33-885c-7a9f62427783	Checking	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-17 22:22:14.92634+00	468	\N	0	0	0	0	\N	\N
+ce232888-9819-4d54-9640-cce5c9095487	SI-14	sale	skf_polybags	polybags	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	2026-09-15	363460.00	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-22 12:19:35.670979+00	\N	\N	0	0	0	0	\N	\N
 35a918b0-1af8-4197-bfb2-15292f1e3825	SO-02	sale_order	skf_polytex	fabric	1a2ad29f-f058-453a-bf99-e9e1d1dbdc7f	2026-08-23	550000	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-23 19:13:06.799928+00	\N	\N	0	0	0	0	\N	\N
 beefd98a-d86c-49af-b224-a977eb0dbcc3	SO-03	sale_order	skf_polytex	fabric	3a78e9b2-8973-4c4f-822f-91cbf7b6c253	2026-08-23	1302500	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-23 19:31:45.158191+00	\N	\N	0	0	0	0	\N	\N
+2af26f0a-2772-4fbf-ada3-7fd24f412095	SI-02	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-08-28	24600	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-28 05:44:42.006853+00	\N	\N	0	0	0	0	\N	\N
+42d4600a-20e0-4681-907a-42e33861d4bc	SI-03	sale	skf_polybags	polybags	bb6ec8ae-b1af-4181-90b3-f13405f372a1	2026-08-31	108500	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:49:09.925778+00	\N	\N	0	0	0	0	\N	\N
+eb802a96-5a6e-4945-9a9e-b4e136711362	SI-04	sale	skf_polybags	polybags	aed6df78-869e-4c5d-9444-431d781283cc	2026-08-31	43000	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:58:35.690412+00	\N	\N	0	0	0	0	\N	\N
+2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	SI-05	sale	skf_polybags	polybags	15f0a516-f34b-41ce-80df-e21cc0554b9a	2026-09-02	250838.00	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-02 12:51:52.364096+00	\N	\N	0	0	0	0	\N	\N
 \.
 
 
@@ -1923,12 +2240,15 @@ COPY public.items (id, name, category, default_unit, last_purchase_rate, last_sa
 681b4a6b-f63f-4eb6-8557-1a8b23878829	EVA Bag	polybags	PCS	\N	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 ca075ed1-3d8d-4a42-b685-2dcfd1533751	HD Polybag	polybags	PCS	\N	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 edcd1631-dd8f-4a56-8356-3487a4293950	BOPP	polybags	PCS	\N	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
-bc16062b-8939-428a-8872-7a6d4313be26	PP	polybags	PCS	\N	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
-9307a034-5509-4f0c-9674-d948f7cd7ece	Fabric	fabric	KG	\N	3000	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
+7f06a687-636e-4f8a-b4be-8fb4d4090352	LLD Polybag	polybags	PCS	1000	680	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 4237b09a-1618-403a-9c21-18976904a79d	Block	polybags	PCS	4690	\N	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-11 18:47:32.639362+00	\N	\N	\N	product
-7f06a687-636e-4f8a-b4be-8fb4d4090352	LLD Polybag	polybags	PCS	1000	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
-89acf469-10bd-48f9-bcd1-24497e4cf3b3	Scuba Fabric	fabric	KG	\N	\N	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-18 21:37:25.397985+00	\N	in_house	88-92% Polyester 8-12% Spandex 	product
 d29e3283-803e-4355-9a53-2c7f5cf56cbc	Cationic Lycra Jersey	fabric	KG	\N	\N	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-23 19:12:07.929506+00	\N	in_house	88-92% Polyester  8-12% Spandex 	product
+495d1db9-95b6-4be4-9268-226a56554d7a	Flyers	polybags	PCS	\N	65	t	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:43:52.717355+00	\N	\N	\N	product
+9183c9b2-6fd5-4057-a8aa-b5e264312127	Eva bag	polybags	PCS	\N	35	t	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:57:05.6573+00	\N	\N	\N	product
+f2fd52a8-be5e-469d-970a-4e53f9925494	Screens	polybags	PCS	\N	1000	t	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:46:21.56345+00	\N	\N	\N	product
+89acf469-10bd-48f9-bcd1-24497e4cf3b3	Scuba Fabric	fabric	KG	\N	1550	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-18 21:37:25.397985+00	\N	in_house	88-92% Polyester 8-12% Spandex 	product
+9307a034-5509-4f0c-9674-d948f7cd7ece	Fabric	fabric	KG	\N	2500	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
+bc16062b-8939-428a-8872-7a6d4313be26	PP	polybags	PCS	\N	820	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 \.
 
 
@@ -1991,7 +2311,6 @@ c5822c80-0707-4995-8897-03b944f22aab	2026-08-15	546958e7-c3e6-415a-ba96-04534550
 6eaf8cc5-5f0e-49a2-982d-063d048fd2bf	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	4118c128-41c0-40fa-9c46-35fbc42d230f	0	514968	opening_balance	4118c128-41c0-40fa-9c46-35fbc42d230f	2026-08-17 21:44:51.107649+00	Opening balance	\N
 c781a7e3-a375-47f2-b60d-b5e437823cb0	2026-08-15	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	2762574	0	opening_balance	635db2c3-1801-44a6-822a-cf1dbc116223	2026-08-17 21:48:22.363723+00	Opening balance	\N
 677be3b0-7b9e-496d-813a-d463a6582e90	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	635db2c3-1801-44a6-822a-cf1dbc116223	0	2762574	opening_balance	635db2c3-1801-44a6-822a-cf1dbc116223	2026-08-17 21:48:22.363723+00	Opening balance	\N
-b2276662-8f1f-4ea4-8d57-27a4aca24491	2026-08-17	4d83866f-efb8-43d0-954a-b424f2711003	3df7c6fc-b219-4436-99c4-4caba186a5ae	500000	0	invoice	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-17 22:22:14.92634+00	Check	PI-03
 6031b0ab-232f-4ad3-a629-4e83133e7511	2026-08-17	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	500000	invoice	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-17 22:22:14.92634+00	Check	PI-03
 9ccaf33b-8da3-43b8-8e22-0f4db8c59759	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	4b3d374d-0009-4eb5-bb4d-b91eedba0505	581250	0	opening_balance	4b3d374d-0009-4eb5-bb4d-b91eedba0505	2026-08-17 21:36:50.502286+00	Advance — Opening balance	\N
 e486c136-6a4e-40d2-aad5-21dde1f76ea0	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	1a2ad29f-f058-453a-bf99-e9e1d1dbdc7f	275000	0	opening_balance	1a2ad29f-f058-453a-bf99-e9e1d1dbdc7f	2026-08-17 21:36:50.502286+00	Advance — Opening balance	\N
@@ -2015,7 +2334,6 @@ b4dcf4ab-e130-4603-a1fd-f979a91a4b5b	2026-08-21	e6a42291-8735-4930-ac69-96692076
 3c53e239-b360-487c-b0ee-a27b4694b512	2026-08-21	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	1280	payment	4d7690cc-cfeb-489d-a897-27e8e8bd520b	2026-08-21 12:45:27.533876+00	Leopard	CPV-04
 9eef3e8f-c462-466c-bdee-d29ef11d1ae7	2026-08-21	46ff676e-30cb-49e1-901b-f714a0c05ed1	635db2c3-1801-44a6-822a-cf1dbc116223	425000	0	payment	88ae0e3d-3e33-4180-ad67-8f2c81672c9d	2026-08-21 13:47:35.741303+00	2 chqs from azlan	CRV-09
 61f9eae5-8ccf-4c7b-bbfa-15114bc9365f	2026-08-21	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	0	425000	payment	88ae0e3d-3e33-4180-ad67-8f2c81672c9d	2026-08-21 13:47:35.741303+00	2 chqs from azlan	CRV-09
-7c729419-4a3a-4cfc-8490-a507ce1ce98e	2026-08-21	4d83866f-efb8-43d0-954a-b424f2711003	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	500000	void	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-21 17:16:12.283392+00	Void — Checking	PI-03
 c7f1e68d-99ff-4e1f-8f20-fd808b4d9ee2	2026-08-21	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	500000	0	void	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-21 17:16:12.283392+00	Void — Checking	PI-03
 ae9765d7-f636-4c12-b349-3da6ca72b2db	2026-08-22	46ff676e-30cb-49e1-901b-f714a0c05ed1	0fea589d-e163-49b4-9fa6-cdc95867c38b	16000	0	payment	fc257527-03a9-42ff-a045-88188b4c703f	2026-08-22 15:13:35.4218+00	Cash	CRV-10
 af2cb769-459d-4be3-842c-dd947874b69b	2026-08-22	425dc932-ca69-4c03-97fa-b08750e4851a	0fea589d-e163-49b4-9fa6-cdc95867c38b	0	16000	payment	fc257527-03a9-42ff-a045-88188b4c703f	2026-08-22 15:13:35.4218+00	Cash	CRV-10
@@ -2037,6 +2355,108 @@ e2c63484-f471-40c1-bf14-07c0a464b172	2026-08-24	46ff676e-30cb-49e1-901b-f714a0c0
 59629f37-a3a4-4617-9145-3733588aab7a	2026-08-24	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	0	450000	payment	b526462e-255f-486e-b328-84393c70023e	2026-08-24 21:57:55.935485+00	2 chq	CRV-12
 00008a67-4fae-4ccc-ab16-54a731079dad	2026-08-26	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	4000	0	payment	8f295cd1-b046-4b33-8052-01a425c41caf	2026-08-26 22:10:20.325229+00	Kfc	CPV-11
 df188ad0-956a-43fb-923b-244198f9a5f0	2026-08-26	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	4000	payment	8f295cd1-b046-4b33-8052-01a425c41caf	2026-08-26 22:10:20.325229+00	Kfc	CPV-11
+f0480b39-ee78-4044-b663-4d507db236f6	2026-08-28	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	24600	0	invoice	2af26f0a-2772-4fbf-ada3-7fd24f412095	2026-08-28 05:44:42.006853+00	10×14	SI-02
+51f1facb-442e-4675-b579-e36c8df60fab	2026-08-28	f9e568c4-fbb6-4500-a222-1a7a53171d4c	15f0a516-f34b-41ce-80df-e21cc0554b9a	1868978	0	opening_balance	15f0a516-f34b-41ce-80df-e21cc0554b9a	2026-08-28 07:27:07.207871+00	Opening balance	\N
+1d6564c0-a820-4351-9318-c1f5f19c1e70	2026-08-28	6005ba1e-cd53-4805-9502-6a48a899f6eb	15f0a516-f34b-41ce-80df-e21cc0554b9a	0	1868978	opening_balance	15f0a516-f34b-41ce-80df-e21cc0554b9a	2026-08-28 07:27:07.207871+00	Opening balance	\N
+39961208-e330-408c-9c6e-bb5f4a71244d	2026-08-28	46ff676e-30cb-49e1-901b-f714a0c05ed1	635db2c3-1801-44a6-822a-cf1dbc116223	128000	0	payment	ddf5f5f8-92b5-4acb-89bc-b3880d0d44a5	2026-08-28 11:52:44.909682+00	Chq	CRV-13
+3747695c-e445-41a1-a114-aa80898b4f99	2026-08-28	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	0	128000	payment	ddf5f5f8-92b5-4acb-89bc-b3880d0d44a5	2026-08-28 11:52:44.909682+00	Chq	CRV-13
+1de3e186-0197-4af0-bc16-4de6ca243d23	2026-08-28	9682f10e-5b8d-46d2-99d0-98d8010a7f8d	7eb5eb63-c1d3-4ed9-bf13-696b45397a3a	100000	0	payment	47018382-4c0d-4cb0-883a-9cded84fbbe5	2026-08-28 11:53:01.469242+00	Cash	CPV-12
+9e573584-1c0f-4ff1-bfa2-8ecb6c3ddc3d	2026-08-28	46ff676e-30cb-49e1-901b-f714a0c05ed1	7eb5eb63-c1d3-4ed9-bf13-696b45397a3a	0	100000	payment	47018382-4c0d-4cb0-883a-9cded84fbbe5	2026-08-28 11:53:01.469242+00	Cash	CPV-12
+dcf52745-7b94-4e52-b8a9-6cb33be9b8f6	2026-08-29	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	5890	0	payment	a6bf24af-4103-413b-ae67-b54994c30498	2026-08-29 09:11:14.328282+00	\N	CRV-14
+edb5de58-dafd-4c5e-b739-ecd34b0ff28e	2026-08-29	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	5890	payment	a6bf24af-4103-413b-ae67-b54994c30498	2026-08-29 09:11:14.328282+00	\N	CRV-14
+818141de-af63-4f0a-9234-a8dfda85ac21	2026-08-31	50e275b8-01bb-44a7-9443-8cedb5646dd7	bb6ec8ae-b1af-4181-90b3-f13405f372a1	108500	0	invoice	42d4600a-20e0-4681-907a-42e33861d4bc	2026-08-31 20:49:09.925778+00	\N	SI-03
+ce83c9d5-5934-43ab-b308-6046375ae1ea	2026-08-31	28883430-1e5f-40ab-bf42-f340c229370a	aed6df78-869e-4c5d-9444-431d781283cc	43000	0	invoice	eb802a96-5a6e-4945-9a9e-b4e136711362	2026-08-31 20:58:35.690412+00	\N	SI-04
+ab45fad3-1915-475b-999f-19bf2d64fb3a	2026-08-31	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	3500	0	payment	db3ed82e-b2ef-431e-8415-e5a0a8511017	2026-08-31 22:20:01.386174+00	Petrol 	CPV-13
+73043819-93fc-4a1b-917c-2c2498e4270d	2026-08-31	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	3500	payment	db3ed82e-b2ef-431e-8415-e5a0a8511017	2026-08-31 22:20:01.386174+00	Petrol 	CPV-13
+f2187949-bc5f-4467-813f-68eddd4de880	2026-08-31	5fac2769-57db-4f6a-b240-d3dd906158be	3111713c-9180-42c5-bb7b-17bd672fdd2a	35322	0	payment	c50e98d7-7afc-4224-8e14-339951851397	2026-08-31 22:21:28.502549+00	\N	CPV-14
+6ed80123-2531-4afe-b6cb-2d9adb64bce9	2026-08-31	46ff676e-30cb-49e1-901b-f714a0c05ed1	3111713c-9180-42c5-bb7b-17bd672fdd2a	0	35322	payment	c50e98d7-7afc-4224-8e14-339951851397	2026-08-31 22:21:28.502549+00	\N	CPV-14
+cb367e58-631e-4f8b-bc60-74c0f5266d99	2026-08-31	04c19961-b817-440f-a92f-492ea308ea29	\N	6000	0	payment	44a14eeb-53d7-47ab-8957-e5069caea1f4	2026-08-31 22:21:50.564117+00	Token	CPV-15
+b5ce9bc1-f6e9-435a-81ee-111f301dde5d	2026-08-31	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	6000	payment	44a14eeb-53d7-47ab-8957-e5069caea1f4	2026-08-31 22:21:50.564117+00	Token	CPV-15
+e8d54033-1967-4b3b-973c-986992affe3e	2026-08-31	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	5000	0	payment	81ef3436-7625-415c-810c-ea8e43f7114c	2026-08-31 22:22:30.800112+00	\N	CPV-16
+c5e3341e-040d-4569-b41f-8113cc87263b	2026-08-31	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	5000	payment	81ef3436-7625-415c-810c-ea8e43f7114c	2026-08-31 22:22:30.800112+00	\N	CPV-16
+1bea018c-6ab2-456d-9863-5436675a33d2	2026-08-31	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	2000	0	payment	118e4a88-404d-4106-867f-e23460a63306	2026-08-31 22:24:27.492298+00	Zamzam rap	CPV-17
+63d9a160-2d9a-491e-b0bd-515e1afc5034	2026-08-31	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	2000	payment	118e4a88-404d-4106-867f-e23460a63306	2026-08-31 22:24:27.492298+00	Zamzam rap	CPV-17
+d46b4ba8-c729-41b4-9afb-3b10b293327f	2026-09-01	46ff676e-30cb-49e1-901b-f714a0c05ed1	295c6b52-b21d-4a69-898b-6f0ada645c69	94700	0	payment	f36a2121-4bad-4ebe-af74-659a30938640	2026-09-01 12:23:14.039783+00	Last bill clear	CRV-15
+233ddb20-165d-41d3-91f2-58ec17b18c7a	2026-09-01	e6a42291-8735-4930-ac69-9669207641a0	295c6b52-b21d-4a69-898b-6f0ada645c69	0	94700	payment	f36a2121-4bad-4ebe-af74-659a30938640	2026-09-01 12:23:14.039783+00	Last bill clear	CRV-15
+ad34db2b-4b72-45e7-9fa8-d833b61c2f9a	2026-09-01	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	47000	0	payment	db0634af-8e1c-4d42-8d76-13f0b0a7cee3	2026-09-01 14:20:45.772327+00	Flyers advance 	CRV-16
+6977d623-5759-4d96-ba89-8145d8084a95	2026-09-01	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	47000	payment	db0634af-8e1c-4d42-8d76-13f0b0a7cee3	2026-09-01 14:20:45.772327+00	Flyers advance 	CRV-16
+9fc34799-75ee-4908-95d4-e33fc5809564	2026-09-01	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	5000	0	payment	1ee0f191-23db-4f41-a86e-8a61fd541a1b	2026-09-01 14:21:35.473086+00	Advance 	CRV-17
+0aacdac5-1c6d-47ff-b9a6-35d78c5ae6a1	2026-09-01	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	5000	payment	1ee0f191-23db-4f41-a86e-8a61fd541a1b	2026-09-01 14:21:35.473086+00	Advance 	CRV-17
+1fc875f2-dc00-4eb6-b6ae-e7297566cdd1	2026-09-02	f9e568c4-fbb6-4500-a222-1a7a53171d4c	15f0a516-f34b-41ce-80df-e21cc0554b9a	250838.00	0	invoice	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	2026-09-02 12:51:52.364096+00	04-08-26; 17-08-26; 18-08-26	SI-05
+368059fb-4c22-49b9-99d4-e07aa4ecf490	2026-09-02	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	49200	0	invoice	12f790cb-3295-41cd-b7b3-bc4c449d236f	2026-09-02 16:10:23.889506+00	\N	SI-06
+cb219589-a26b-4bf7-af17-671e31a76a32	2026-09-02	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	49200	invoice	12f790cb-3295-41cd-b7b3-bc4c449d236f	2026-09-02 16:10:23.889506+00	\N	SI-06
+0680d8a5-e80c-46a3-a1d4-eb6450ecbe14	2026-08-28	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	24600	invoice	2af26f0a-2772-4fbf-ada3-7fd24f412095	2026-08-28 05:44:42.006853+00	10×14	SI-02
+42229a05-6c6d-4fe9-a931-2b00600531fb	2026-08-31	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	bb6ec8ae-b1af-4181-90b3-f13405f372a1	0	108500	invoice	42d4600a-20e0-4681-907a-42e33861d4bc	2026-08-31 20:49:09.925778+00	\N	SI-03
+babceda2-0931-4c1a-9d0c-8fee6fbbbc85	2026-08-31	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	aed6df78-869e-4c5d-9444-431d781283cc	0	43000	invoice	eb802a96-5a6e-4945-9a9e-b4e136711362	2026-08-31 20:58:35.690412+00	\N	SI-04
+0bf8c141-150a-453c-ac34-410c088d6dc7	2026-09-02	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	15f0a516-f34b-41ce-80df-e21cc0554b9a	0	250838.00	invoice	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	2026-09-02 12:51:52.364096+00	04-08-26; 17-08-26; 18-08-26	SI-05
+7c729419-4a3a-4cfc-8490-a507ce1ce98e	2026-08-21	97443ecd-e235-4fcf-b60c-7de5057553a2	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	500000	void	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-21 17:16:12.283392+00	Void — Checking	PI-03
+b2276662-8f1f-4ea4-8d57-27a4aca24491	2026-08-17	97443ecd-e235-4fcf-b60c-7de5057553a2	3df7c6fc-b219-4436-99c4-4caba186a5ae	500000	0	invoice	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-17 22:22:14.92634+00	Check	PI-03
+707a4470-347e-4975-b6c7-552ae4a686c5	2026-09-06	46ff676e-30cb-49e1-901b-f714a0c05ed1	635db2c3-1801-44a6-822a-cf1dbc116223	450000	0	payment	422530be-af65-4382-b239-c71afc08903b	2026-09-06 12:12:40.72685+00	\N	CRV-18
+238408d0-c923-4b06-a67b-adc88df7f531	2026-09-06	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	0	450000	payment	422530be-af65-4382-b239-c71afc08903b	2026-09-06 12:12:40.72685+00	\N	CRV-18
+ce97293e-64b3-4bd9-a438-ce2b6f13d646	2026-09-06	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	450000	0	payment	cf658a14-421d-46d3-b34f-40efb8371c54	2026-09-06 12:13:06.058718+00	\N	CPV-18
+a2865167-c648-4134-8608-371bae0e7bad	2026-09-06	46ff676e-30cb-49e1-901b-f714a0c05ed1	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	450000	payment	cf658a14-421d-46d3-b34f-40efb8371c54	2026-09-06 12:13:06.058718+00	\N	CPV-18
+5bc6d4a1-ebb6-4c29-9e88-165efa504df9	2026-09-06	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	37000	0	payment	4474de72-e089-4da5-a45b-9f71fc2466bf	2026-09-06 12:13:48.133335+00	\N	CPV-19
+091b9fb1-436b-4cff-8632-6e19db58d9d4	2026-09-06	46ff676e-30cb-49e1-901b-f714a0c05ed1	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	37000	payment	4474de72-e089-4da5-a45b-9f71fc2466bf	2026-09-06 12:13:48.133335+00	\N	CPV-19
+cdbd5eae-6b30-4da6-8751-8bcf77906ab9	2026-09-06	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	200000	0	payment	ef072fe2-989e-4d16-8536-ee03c151a8d9	2026-09-06 12:14:09.64593+00	\N	CPV-20
+6bd35928-1e62-4316-b624-472baae0adce	2026-09-06	46ff676e-30cb-49e1-901b-f714a0c05ed1	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	200000	payment	ef072fe2-989e-4d16-8536-ee03c151a8d9	2026-09-06 12:14:09.64593+00	\N	CPV-20
+e8df1d2f-88cf-439f-af38-3807d10b36c6	2026-09-07	21c01cc6-ee96-4dcd-83c2-64871c947d95	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	299559.00	0	invoice	f2e7eca9-ca09-4c2e-be49-ae68b89ce3e1	2026-09-07 12:40:04.318027+00	\N	SI-07
+3579ef25-c703-43f7-a9f2-dda869066d5a	2026-09-07	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	0	299559.00	invoice	f2e7eca9-ca09-4c2e-be49-ae68b89ce3e1	2026-09-07 12:40:04.318027+00	\N	SI-07
+71a82655-03c1-4cb9-b440-b889a4295c2a	2026-09-07	d2a9abd2-6f4b-4eeb-85e5-77eb64b3a894	4b3d374d-0009-4eb5-bb4d-b91eedba0505	1362295.0	0	invoice	800635de-c64c-4384-b623-201051c0b016	2026-09-07 21:30:52.696744+00	\N	SI-08
+ccc2e70a-a999-493d-91e3-35129f2feaff	2026-09-07	b414cafa-9164-4c44-a264-fb62a28206c1	4b3d374d-0009-4eb5-bb4d-b91eedba0505	0	1362295.0	invoice	800635de-c64c-4384-b623-201051c0b016	2026-09-07 21:30:52.696744+00	\N	SI-08
+644163fe-2295-4260-84eb-945d699642f3	2026-09-08	46ff676e-30cb-49e1-901b-f714a0c05ed1	bb6ec8ae-b1af-4181-90b3-f13405f372a1	85000	0	payment	214cfbad-d451-4017-9f9a-00f8b1b1c665	2026-09-08 09:59:17.804426+00	\N	CRV-19
+417b0acb-76b2-4dc5-8c78-85b55e6b484c	2026-09-08	50e275b8-01bb-44a7-9443-8cedb5646dd7	bb6ec8ae-b1af-4181-90b3-f13405f372a1	0	85000	payment	214cfbad-d451-4017-9f9a-00f8b1b1c665	2026-09-08 09:59:17.804426+00	\N	CRV-19
+392e7971-3386-4ddb-8be9-852a930960fd	2026-09-08	46ff676e-30cb-49e1-901b-f714a0c05ed1	aed6df78-869e-4c5d-9444-431d781283cc	43000	0	payment	3627fdf4-a36b-424d-b229-a6936cae4692	2026-09-08 12:03:37.902032+00	Js bnk chq	CRV-20
+69418b4f-6ba0-4f95-944c-d84f20b98147	2026-09-08	28883430-1e5f-40ab-bf42-f340c229370a	aed6df78-869e-4c5d-9444-431d781283cc	0	43000	payment	3627fdf4-a36b-424d-b229-a6936cae4692	2026-09-08 12:03:37.902032+00	Js bnk chq	CRV-20
+98d74bc3-8238-4ea6-8d33-6c8c28b8ceca	2026-09-08	04c19961-b817-440f-a92f-492ea308ea29	\N	25000	0	payment	3b4ff5f6-7c06-4d22-a71a-ca0afe98ce88	2026-09-08 20:44:31.729425+00	Lhr+petrol 	CPV-21
+feccdde3-8ef4-44df-8114-ca49f28121d9	2026-09-08	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	25000	payment	3b4ff5f6-7c06-4d22-a71a-ca0afe98ce88	2026-09-08 20:44:31.729425+00	Lhr+petrol 	CPV-21
+0b2477a0-93c3-4bd6-864f-f0e58e46bd16	2026-09-09	1aea2139-d6a1-4581-b421-04dee3bb2234	\N	10000	0	payment	bfca1fc3-3dc8-4949-ba63-68c0d00a2bd8	2026-09-09 22:02:04.382713+00	Ad	CPV-22
+c68cc314-32d2-46aa-a9e7-4f895c041c34	2026-09-09	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	10000	payment	bfca1fc3-3dc8-4949-ba63-68c0d00a2bd8	2026-09-09 22:02:04.382713+00	Ad	CPV-22
+e91fc316-2484-4b6b-a29a-30618c84096c	2026-09-09	1aea2139-d6a1-4581-b421-04dee3bb2234	\N	20000	0	payment	3402078b-d0d5-4a1a-994a-a7030d7e54de	2026-09-09 22:02:34.857983+00	Maa g	CPV-23
+1936ccc5-0e74-42c4-b3cd-1a371aa42b54	2026-09-09	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	20000	payment	3402078b-d0d5-4a1a-994a-a7030d7e54de	2026-09-09 22:02:34.857983+00	Maa g	CPV-23
+0dca32d6-1797-460a-8190-e333787c158d	2026-09-10	46ff676e-30cb-49e1-901b-f714a0c05ed1	4b3d374d-0009-4eb5-bb4d-b91eedba0505	781050	0	payment	b9f3674f-7ddf-476d-aaae-1858c0510d55	2026-09-10 21:28:50.408502+00	\N	CRV-21
+a9a0f4a9-299c-4bfe-8844-fce731055aab	2026-09-10	d2a9abd2-6f4b-4eeb-85e5-77eb64b3a894	4b3d374d-0009-4eb5-bb4d-b91eedba0505	0	781050	payment	b9f3674f-7ddf-476d-aaae-1858c0510d55	2026-09-10 21:28:50.408502+00	\N	CRV-21
+5c9da613-cf34-4011-ae2b-7eee9bdea126	2026-09-10	e5de6500-c628-4add-a1ab-a659937feea2	c424aef7-e930-4e20-bdb2-cd0d4322ef22	50000	0	payment	8cf7dedc-5d48-49b4-a144-c55a58af4af0	2026-09-10 21:29:40.414794+00	\N	CPV-24
+4e4fd1f6-baaf-4fc3-90c5-0996cbf080ad	2026-09-10	46ff676e-30cb-49e1-901b-f714a0c05ed1	c424aef7-e930-4e20-bdb2-cd0d4322ef22	0	50000	payment	8cf7dedc-5d48-49b4-a144-c55a58af4af0	2026-09-10 21:29:40.414794+00	\N	CPV-24
+ec83e188-dc6c-4fd8-9179-3d942db063f5	2026-09-10	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	10000	0	payment	e77632ac-65c7-4790-9ca0-de1c3503fa55	2026-09-10 21:30:10.892621+00	\N	CPV-25
+179d02e3-0bf9-49f6-8407-1a3f0dbf5f25	2026-09-10	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	10000	payment	e77632ac-65c7-4790-9ca0-de1c3503fa55	2026-09-10 21:30:10.892621+00	\N	CPV-25
+8c779c77-304e-4fdd-a4ad-643d79882e21	2026-09-10	34b3947f-3d7a-4a6e-ad06-74bdfa09d55c	\N	15000	0	payment	96eaf76e-7fd5-45b5-8b08-46fc702f79fc	2026-09-10 21:30:39.439197+00	\N	CPV-26
+6eefe268-3353-4e83-9b5b-5677729caee5	2026-09-10	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	15000	payment	96eaf76e-7fd5-45b5-8b08-46fc702f79fc	2026-09-10 21:30:39.439197+00	\N	CPV-26
+be82c7c8-d386-4b27-9870-1678ab2738dc	2026-09-14	46ff676e-30cb-49e1-901b-f714a0c05ed1	ff67951f-a22a-4487-ad34-fae532eb358d	100000	0	payment	9d84cebe-b462-44fb-b989-0258b35d39e3	2026-09-14 21:35:36.868656+00	Chq	CRV-22
+76db2a4b-8e6b-441d-bdd6-db6aa60dae83	2026-09-14	460aa95d-1519-4435-b641-3e76f6e0016e	ff67951f-a22a-4487-ad34-fae532eb358d	0	100000	payment	9d84cebe-b462-44fb-b989-0258b35d39e3	2026-09-14 21:35:36.868656+00	Chq	CRV-22
+36dc1008-7e64-41c0-b30d-5543e3a662e6	2026-09-14	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	100000	0	payment	50627880-a028-4180-b1c2-2d12481eb983	2026-09-14 21:36:00.716429+00	Neka pak chq	CPV-27
+51c60884-60ca-451f-8f46-cca62ba3598e	2026-09-14	46ff676e-30cb-49e1-901b-f714a0c05ed1	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	100000	payment	50627880-a028-4180-b1c2-2d12481eb983	2026-09-14 21:36:00.716429+00	Neka pak chq	CPV-27
+5ab2a800-27bc-4d04-b3de-e119733f9ada	2026-09-14	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	34000	0	payment	10ea2c3b-db0e-41aa-a23a-70989bbced24	2026-09-14 21:36:45.116372+00	\N	CRV-23
+da939a46-cdfc-4020-aa50-c70b1973344f	2026-09-14	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	34000	payment	10ea2c3b-db0e-41aa-a23a-70989bbced24	2026-09-14 21:36:45.116372+00	\N	CRV-23
+fde8817a-c7d8-4670-91b8-184fddd8632c	2026-09-14	e5de6500-c628-4add-a1ab-a659937feea2	c424aef7-e930-4e20-bdb2-cd0d4322ef22	30000	0	payment	04e1dd6f-2898-445a-a265-ed904b6142c7	2026-09-14 21:37:04.555348+00	\N	CPV-28
+6f4924bb-2359-4891-a21d-f9ef92a214d1	2026-09-14	46ff676e-30cb-49e1-901b-f714a0c05ed1	c424aef7-e930-4e20-bdb2-cd0d4322ef22	0	30000	payment	04e1dd6f-2898-445a-a265-ed904b6142c7	2026-09-14 21:37:04.555348+00	\N	CPV-28
+e035044d-4c87-4be1-b10f-a2a7a52e7429	2026-09-14	e5de6500-c628-4add-a1ab-a659937feea2	c424aef7-e930-4e20-bdb2-cd0d4322ef22	50000	0	payment	5c4f8384-0272-42b4-9890-979bdcc5086a	2026-09-14 21:37:20.466786+00	\N	CPV-29
+e7d73b8c-67af-48cf-9629-fca4bacc9f41	2026-09-14	46ff676e-30cb-49e1-901b-f714a0c05ed1	c424aef7-e930-4e20-bdb2-cd0d4322ef22	0	50000	payment	5c4f8384-0272-42b4-9890-979bdcc5086a	2026-09-14 21:37:20.466786+00	\N	CPV-29
+3107b652-1ff8-4bc4-9356-6df58db4f288	2026-09-14	18a17032-5d3c-4f45-8731-7959254e37b0	\N	10000	0	payment	524eb439-dae2-421e-b0be-1fab339d3b73	2026-09-14 21:38:08.973414+00	Tyre+fuel	CPV-30
+720dd7b7-40b9-4da0-81ee-85676be1498d	2026-09-14	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	10000	payment	524eb439-dae2-421e-b0be-1fab339d3b73	2026-09-14 21:38:08.973414+00	Tyre+fuel	CPV-30
+ead7dc7b-d146-4b0e-bf4b-c28d39d3526d	2026-09-17	f9e568c4-fbb6-4500-a222-1a7a53171d4c	15f0a516-f34b-41ce-80df-e21cc0554b9a	983850.00	0	invoice	7a7537f6-a64d-42c9-8750-94b1073e5ba0	2026-09-17 20:25:18.668004+00	36×60 Mix; Reel 26"	SI-09
+30da4b6d-cb71-4f0b-bc8f-5af6aafd0e53	2026-09-17	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	15f0a516-f34b-41ce-80df-e21cc0554b9a	0	983850.00	invoice	7a7537f6-a64d-42c9-8750-94b1073e5ba0	2026-09-17 20:25:18.668004+00	36×60 Mix; Reel 26"	SI-09
+8e11e9a8-8aa4-4b09-9b20-5e2b165c17a9	2026-09-18	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	61000.0	0	invoice	e7396391-efd6-47b4-98e0-2c21e0e6b134	2026-09-18 07:05:08.578128+00	\N	SI-10
+aec682dd-ec25-468f-80db-6ad5f351288c	2026-09-18	b414cafa-9164-4c44-a264-fb62a28206c1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	61000.0	invoice	e7396391-efd6-47b4-98e0-2c21e0e6b134	2026-09-18 07:05:08.578128+00	\N	SI-10
+9bb2bad3-fd73-4ad7-b84a-7bfbfa2ca72c	2026-09-20	04c19961-b817-440f-a92f-492ea308ea29	\N	45000	0	payment	6320ba04-b023-496a-ac9e-85ca0cce5c38	2026-09-20 22:01:15.228064+00	Bumper,lights,paint 	CPV-31
+944cb0b8-0a46-4e55-bdb7-d41f25f29ab6	2026-09-20	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	45000	payment	6320ba04-b023-496a-ac9e-85ca0cce5c38	2026-09-20 22:01:15.228064+00	Bumper,lights,paint 	CPV-31
+dfd59eca-d481-4c75-b1cd-2ff14f76354a	2026-09-20	46ff676e-30cb-49e1-901b-f714a0c05ed1	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	300000	0	payment	decc482e-cf9d-4850-bef6-039e97f2e384	2026-09-20 22:02:02.443542+00	Online 	CRV-24
+e921cf00-7438-4510-a212-1bfccbde02b1	2026-09-20	21c01cc6-ee96-4dcd-83c2-64871c947d95	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	0	300000	payment	decc482e-cf9d-4850-bef6-039e97f2e384	2026-09-20 22:02:02.443542+00	Online 	CRV-24
+a8fbf3f0-9fe1-49b2-ad3e-d84a1a47a27a	2026-09-20	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	300000	0	payment	c04c8d9b-52bc-4764-9370-64083d62812c	2026-09-20 22:02:34.259082+00	Online	CPV-32
+d62ea2cb-688b-41dc-9f39-260d9c9f9c34	2026-09-20	46ff676e-30cb-49e1-901b-f714a0c05ed1	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	300000	payment	c04c8d9b-52bc-4764-9370-64083d62812c	2026-09-20 22:02:34.259082+00	Online	CPV-32
+c361c478-759a-49f7-a675-a9e03b705c36	2026-09-20	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	500000	0	payment	1776c102-fad0-426f-b7ba-e020730ca7b3	2026-09-20 22:03:50.809097+00	5 lakh. Second week of sep	CPV-33
+c350a025-d355-4259-bddf-2f3c29690875	2026-09-20	46ff676e-30cb-49e1-901b-f714a0c05ed1	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	500000	payment	1776c102-fad0-426f-b7ba-e020730ca7b3	2026-09-20 22:03:50.809097+00	5 lakh. Second week of sep	CPV-33
+4f9b1539-cd20-45a4-9015-93ab34632d0b	2026-09-20	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	61000	0	payment	ef06eaed-7569-4ae5-9c0e-efdddef5d8fa	2026-09-20 22:08:17.890724+00	Karachi fabric	CRV-25
+15efdc8b-516f-4a8d-b10c-375e432950dc	2026-09-20	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	61000	payment	ef06eaed-7569-4ae5-9c0e-efdddef5d8fa	2026-09-20 22:08:17.890724+00	Karachi fabric	CRV-25
+ffc4a77b-581e-4665-a2b0-437ab09d9aeb	2026-09-19	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	31160	0	invoice	e8d8525c-05dc-4be9-b34f-4215739127d1	2026-09-21 05:43:25.929323+00	10×12 Tape	SI-11
+f7671fae-3ebc-4bdc-82cd-35f742885b8f	2026-09-19	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	31160	invoice	e8d8525c-05dc-4be9-b34f-4215739127d1	2026-09-21 05:43:25.929323+00	10×12 Tape	SI-11
+cb18f450-3f0d-467a-a7e7-b0b3119ecf3b	2026-09-21	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	31160	void	e8d8525c-05dc-4be9-b34f-4215739127d1	2026-09-21 05:45:04.886335+00	Void — Incomplete	SI-11
+c0bd167e-53af-413c-866a-1344a6a936a3	2026-09-21	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	31160	0	void	e8d8525c-05dc-4be9-b34f-4215739127d1	2026-09-21 05:45:04.886335+00	Void — Incomplete	SI-11
+1b58fef0-b949-4049-8b5b-1ca779a27d9d	2026-09-19	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	49200	0	invoice	2af7d047-2bf3-4ca9-a2cc-54de244fb80f	2026-09-21 05:46:40.40321+00	12×14 Tape; 14×18	SI-12
+452a72b7-8c73-4b82-8013-a2864cfb8141	2026-09-19	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	49200	invoice	2af7d047-2bf3-4ca9-a2cc-54de244fb80f	2026-09-21 05:46:40.40321+00	12×14 Tape; 14×18	SI-12
+d9cad47f-817b-4698-9e9f-3e00b32e334e	2026-09-21	21c01cc6-ee96-4dcd-83c2-64871c947d95	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	359845.0	0	invoice	0f3c00aa-1ed9-4cf7-b922-f4742b83352b	2026-09-21 07:29:09.27207+00	17/09/2026; 19/09/2026	SI-13
+9cbd0d20-eb18-4240-b234-470439e430d8	2026-09-21	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	0	359845.0	invoice	0f3c00aa-1ed9-4cf7-b922-f4742b83352b	2026-09-21 07:29:09.27207+00	17/09/2026; 19/09/2026	SI-13
+998d339d-b0df-4c93-bdf7-e1f942de73aa	2026-09-15	15d11f17-44ee-4a3b-9ace-7fd690a91023	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	363460.00	0	invoice	ce232888-9819-4d54-9640-cce5c9095487	2026-09-22 12:19:35.670979+00	9 bags 40*60; Polybag 30*50.  11 bags	SI-14
+99377696-d500-456b-a4d9-fcc69b0e48d8	2026-09-15	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	0	363460.00	invoice	ce232888-9819-4d54-9640-cce5c9095487	2026-09-22 12:19:35.670979+00	9 bags 40*60; Polybag 30*50.  11 bags	SI-14
 \.
 
 
@@ -2072,6 +2492,11 @@ ff67951f-a22a-4487-ad34-fae532eb358d	NEKA PAK	customer	{}	\N	\N	460aa95d-1519-44
 258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	Cash Sale	customer	{fabric,polybags}	\N	\N	c601aae0-067b-436a-9008-626e12fedc44	0	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-19 18:20:12.812449+00	\N	\N	\N
 c424aef7-e930-4e20-bdb2-cd0d4322ef22	Naeem Printer	supplier	{polybags}	\N	\N	e5de6500-c628-4add-a1ab-a659937feea2	0	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-22 15:32:26.829556+00	\N	\N	\N
 3a78e9b2-8973-4c4f-822f-91cbf7b6c253	SAQLAIN SHEIKH	customer	{NULL}	\N	\N	8db3d249-e3fd-4feb-8637-8256201733d6	0	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-23 19:27:04.287546+00	\N	\N	\N
+a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	Faraz Sports Hosiery Section	customer	{polybags}	\N	\N	f381c993-3a45-4110-95c4-79702f855f1d	0	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-28 05:42:14.08759+00	\N	\N	\N
+15f0a516-f34b-41ce-80df-e21cc0554b9a	FARAZ SPORTS DYEING	customer	{fabric}	\N	\N	f9e568c4-fbb6-4500-a222-1a7a53171d4c	1868978	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-28 07:27:07.207871+00	\N	\N	\N
+bb6ec8ae-b1af-4181-90b3-f13405f372a1	WP international	customer	{NULL}	03000600216	\N	50e275b8-01bb-44a7-9443-8cedb5646dd7	0	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:43:25.184859+00	\N	\N	\N
+aed6df78-869e-4c5d-9444-431d781283cc	Naveel soni	customer	{NULL}	\N	\N	28883430-1e5f-40ab-bf42-f340c229370a	0	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:56:43.077537+00	\N	\N	\N
+3111713c-9180-42c5-bb7b-17bd672fdd2a	Gulam Cheema plastic	supplier	{NULL}	\N	\N	5fac2769-57db-4f6a-b240-d3dd906158be	0	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 22:20:49.868317+00	\N	\N	\N
 \.
 
 
@@ -2079,27 +2504,62 @@ c424aef7-e930-4e20-bdb2-cd0d4322ef22	Naeem Printer	supplier	{polybags}	\N	\N	e5d
 -- Data for Name: payments; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.payments (id, payment_date, party_id, direction, amount, method, cash_bank_account_id, linked_invoice_id, notes, status, voided_at, voided_by, created_by, created_at, voucher_no, void_reason, direct_account_id) FROM stdin;
-0606e531-b3a8-42ea-9dd8-b1095f273dc3	2026-08-19	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	4000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Evabag advance 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-19 18:20:49.793524+00	CRV-02	\N	\N
-6cf08db6-0e54-4614-b7ba-4bcd96818ee6	2026-08-20	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	12250	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Eva bag	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-20 11:43:57.640587+00	CRV-04	\N	\N
-367a2ab9-a2ef-4f13-8c7d-a4003dc8edcf	2026-08-21	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	255681	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Bhutta chq + 90k cash	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 10:18:03.994197+00	CPV-01	\N	\N
-77b8ac02-2b2b-4e92-86b3-77b3af98e9da	2026-08-21	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	receipt	165681	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Chq 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 10:18:53.336604+00	CRV-06	\N	\N
-9a170f71-615a-4bb4-82f2-057752bdf758	2026-08-21	\N	payment	5000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Petrol + tyr	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 11:15:45.586701+00	CPV-02	\N	18a17032-5d3c-4f45-8731-7959254e37b0
-7fffa7ce-1ead-4480-aa9c-2cb61d65efcd	2026-08-21	\N	payment	20000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 11:16:17.512366+00	CPV-03	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65
-59b07a3a-e38c-4e88-b475-05605d443c35	2026-08-21	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	20000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Advance for flyers	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 12:43:16.56232+00	CRV-07	\N	\N
-02bd5fdf-9626-458b-ad13-e315a7b4598b	2026-08-21	295c6b52-b21d-4a69-898b-6f0ada645c69	receipt	151750	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 12:44:40.829775+00	CRV-08	\N	\N
-4d7690cc-cfeb-489d-a897-27e8e8bd520b	2026-08-21	\N	payment	1280	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Leopard	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 12:45:27.533876+00	CPV-04	\N	18a17032-5d3c-4f45-8731-7959254e37b0
-88ae0e3d-3e33-4180-ad67-8f2c81672c9d	2026-08-21	635db2c3-1801-44a6-822a-cf1dbc116223	receipt	425000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	2 chqs from azlan	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 13:47:35.741303+00	CRV-09	\N	\N
-fc257527-03a9-42ff-a045-88188b4c703f	2026-08-22	0fea589d-e163-49b4-9fa6-cdc95867c38b	receipt	16000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Cash	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-22 15:13:35.4218+00	CRV-10	\N	\N
-736fbd8b-5893-470c-b0ab-b68a78f2c4ab	2026-08-22	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	76400	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Eva bag custmr	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-22 15:15:18.865864+00	CRV-11	\N	\N
-696d3a1e-6082-4bc9-8210-bc9839ee0fc3	2026-08-22	c424aef7-e930-4e20-bdb2-cd0d4322ef22	payment	80000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-22 15:32:43.4005+00	CPV-05	\N	\N
-86ca34ad-d552-42ed-b605-fae17c0a40e5	2026-08-24	7eb5eb63-c1d3-4ed9-bf13-696b45397a3a	payment	300000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 11:30:33.411006+00	CPV-06	\N	\N
-45868ffa-3862-4930-8b90-da80f0fd30d3	2026-08-24	\N	payment	5000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Pakages 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 11:31:04.828557+00	CPV-07	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65
-0949fa0d-b2af-46bf-af10-f5063cf3342b	2026-08-24	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	601750	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	3 chqs	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 11:32:24.813435+00	CPV-08	\N	\N
-39748b0f-1659-4d41-b7df-013d0c6f6b0e	2026-08-24	\N	payment	3000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Saad	posted	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-24 21:57:13.709252+00	CPV-09	\N	18a17032-5d3c-4f45-8731-7959254e37b0
-d1bd5898-71c6-4e13-a705-4fb22cd1c881	2026-08-24	\N	payment	1000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Hospital 	posted	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-24 21:57:29.308047+00	CPV-10	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65
-b526462e-255f-486e-b328-84393c70023e	2026-08-24	635db2c3-1801-44a6-822a-cf1dbc116223	receipt	450000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	2 chq	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 21:57:55.935485+00	CRV-12	\N	\N
-8f295cd1-b046-4b33-8052-01a425c41caf	2026-08-26	\N	payment	4000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Kfc	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-26 22:10:20.325229+00	CPV-11	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65
+COPY public.payments (id, payment_date, party_id, direction, amount, method, cash_bank_account_id, linked_invoice_id, notes, status, voided_at, voided_by, created_by, created_at, voucher_no, void_reason, direct_account_id, cheque_no) FROM stdin;
+0606e531-b3a8-42ea-9dd8-b1095f273dc3	2026-08-19	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	4000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Evabag advance 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-19 18:20:49.793524+00	CRV-02	\N	\N	\N
+e77632ac-65c7-4790-9ca0-de1c3503fa55	2026-09-10	\N	payment	10000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-10 21:30:10.892621+00	CPV-25	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+6cf08db6-0e54-4614-b7ba-4bcd96818ee6	2026-08-20	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	12250	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Eva bag	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-20 11:43:57.640587+00	CRV-04	\N	\N	\N
+96eaf76e-7fd5-45b5-8b08-46fc702f79fc	2026-09-10	\N	payment	15000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-10 21:30:39.439197+00	CPV-26	\N	34b3947f-3d7a-4a6e-ad06-74bdfa09d55c	\N
+367a2ab9-a2ef-4f13-8c7d-a4003dc8edcf	2026-08-21	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	255681	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Bhutta chq + 90k cash	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 10:18:03.994197+00	CPV-01	\N	\N	\N
+77b8ac02-2b2b-4e92-86b3-77b3af98e9da	2026-08-21	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	receipt	165681	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Chq 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 10:18:53.336604+00	CRV-06	\N	\N	\N
+9a170f71-615a-4bb4-82f2-057752bdf758	2026-08-21	\N	payment	5000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Petrol + tyr	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 11:15:45.586701+00	CPV-02	\N	18a17032-5d3c-4f45-8731-7959254e37b0	\N
+7fffa7ce-1ead-4480-aa9c-2cb61d65efcd	2026-08-21	\N	payment	20000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 11:16:17.512366+00	CPV-03	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+59b07a3a-e38c-4e88-b475-05605d443c35	2026-08-21	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	20000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Advance for flyers	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 12:43:16.56232+00	CRV-07	\N	\N	\N
+02bd5fdf-9626-458b-ad13-e315a7b4598b	2026-08-21	295c6b52-b21d-4a69-898b-6f0ada645c69	receipt	151750	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 12:44:40.829775+00	CRV-08	\N	\N	\N
+4d7690cc-cfeb-489d-a897-27e8e8bd520b	2026-08-21	\N	payment	1280	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Leopard	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 12:45:27.533876+00	CPV-04	\N	18a17032-5d3c-4f45-8731-7959254e37b0	\N
+88ae0e3d-3e33-4180-ad67-8f2c81672c9d	2026-08-21	635db2c3-1801-44a6-822a-cf1dbc116223	receipt	425000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	2 chqs from azlan	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-21 13:47:35.741303+00	CRV-09	\N	\N	\N
+fc257527-03a9-42ff-a045-88188b4c703f	2026-08-22	0fea589d-e163-49b4-9fa6-cdc95867c38b	receipt	16000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Cash	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-22 15:13:35.4218+00	CRV-10	\N	\N	\N
+736fbd8b-5893-470c-b0ab-b68a78f2c4ab	2026-08-22	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	76400	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Eva bag custmr	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-22 15:15:18.865864+00	CRV-11	\N	\N	\N
+696d3a1e-6082-4bc9-8210-bc9839ee0fc3	2026-08-22	c424aef7-e930-4e20-bdb2-cd0d4322ef22	payment	80000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-22 15:32:43.4005+00	CPV-05	\N	\N	\N
+86ca34ad-d552-42ed-b605-fae17c0a40e5	2026-08-24	7eb5eb63-c1d3-4ed9-bf13-696b45397a3a	payment	300000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 11:30:33.411006+00	CPV-06	\N	\N	\N
+45868ffa-3862-4930-8b90-da80f0fd30d3	2026-08-24	\N	payment	5000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Pakages 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 11:31:04.828557+00	CPV-07	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+0949fa0d-b2af-46bf-af10-f5063cf3342b	2026-08-24	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	601750	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	3 chqs	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 11:32:24.813435+00	CPV-08	\N	\N	\N
+39748b0f-1659-4d41-b7df-013d0c6f6b0e	2026-08-24	\N	payment	3000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Saad	posted	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-24 21:57:13.709252+00	CPV-09	\N	18a17032-5d3c-4f45-8731-7959254e37b0	\N
+d1bd5898-71c6-4e13-a705-4fb22cd1c881	2026-08-24	\N	payment	1000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Hospital 	posted	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-24 21:57:29.308047+00	CPV-10	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+b526462e-255f-486e-b328-84393c70023e	2026-08-24	635db2c3-1801-44a6-822a-cf1dbc116223	receipt	450000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	2 chq	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-24 21:57:55.935485+00	CRV-12	\N	\N	\N
+8f295cd1-b046-4b33-8052-01a425c41caf	2026-08-26	\N	payment	4000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Kfc	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-26 22:10:20.325229+00	CPV-11	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+ddf5f5f8-92b5-4acb-89bc-b3880d0d44a5	2026-08-28	635db2c3-1801-44a6-822a-cf1dbc116223	receipt	128000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Chq	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-28 11:52:44.909682+00	CRV-13	\N	\N	\N
+47018382-4c0d-4cb0-883a-9cded84fbbe5	2026-08-28	7eb5eb63-c1d3-4ed9-bf13-696b45397a3a	payment	100000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Cash	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-28 11:53:01.469242+00	CPV-12	\N	\N	\N
+a6bf24af-4103-413b-ae67-b54994c30498	2026-08-29	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	5890	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-29 09:11:14.328282+00	CRV-14	\N	\N	\N
+db3ed82e-b2ef-431e-8415-e5a0a8511017	2026-08-31	\N	payment	3500	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Petrol 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 22:20:01.386174+00	CPV-13	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+c50e98d7-7afc-4224-8e14-339951851397	2026-08-31	3111713c-9180-42c5-bb7b-17bd672fdd2a	payment	35322	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 22:21:28.502549+00	CPV-14	\N	\N	\N
+44a14eeb-53d7-47ab-8957-e5069caea1f4	2026-08-31	\N	payment	6000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Token	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 22:21:50.564117+00	CPV-15	\N	04c19961-b817-440f-a92f-492ea308ea29	\N
+81ef3436-7625-415c-810c-ea8e43f7114c	2026-08-31	\N	payment	5000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 22:22:30.800112+00	CPV-16	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+118e4a88-404d-4106-867f-e23460a63306	2026-08-31	\N	payment	2000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Zamzam rap	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 22:24:27.492298+00	CPV-17	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+f36a2121-4bad-4ebe-af74-659a30938640	2026-09-01	295c6b52-b21d-4a69-898b-6f0ada645c69	receipt	94700	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Last bill clear	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-01 12:23:14.039783+00	CRV-15	\N	\N	\N
+db0634af-8e1c-4d42-8d76-13f0b0a7cee3	2026-09-01	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	47000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Flyers advance 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-01 14:20:45.772327+00	CRV-16	\N	\N	\N
+1ee0f191-23db-4f41-a86e-8a61fd541a1b	2026-09-01	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	5000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Advance 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-01 14:21:35.473086+00	CRV-17	\N	\N	\N
+422530be-af65-4382-b239-c71afc08903b	2026-09-06	635db2c3-1801-44a6-822a-cf1dbc116223	receipt	450000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-06 12:12:40.72685+00	CRV-18	\N	\N	\N
+cf658a14-421d-46d3-b34f-40efb8371c54	2026-09-06	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	450000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-06 12:13:06.058718+00	CPV-18	\N	\N	\N
+4474de72-e089-4da5-a45b-9f71fc2466bf	2026-09-06	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	37000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-06 12:13:48.133335+00	CPV-19	\N	\N	\N
+ef072fe2-989e-4d16-8536-ee03c151a8d9	2026-09-06	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	200000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-06 12:14:09.64593+00	CPV-20	\N	\N	\N
+214cfbad-d451-4017-9f9a-00f8b1b1c665	2026-09-08	bb6ec8ae-b1af-4181-90b3-f13405f372a1	receipt	85000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-08 09:59:17.804426+00	CRV-19	\N	\N	\N
+3627fdf4-a36b-424d-b229-a6936cae4692	2026-09-08	aed6df78-869e-4c5d-9444-431d781283cc	receipt	43000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Js bnk chq	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-08 12:03:37.902032+00	CRV-20	\N	\N	\N
+3b4ff5f6-7c06-4d22-a71a-ca0afe98ce88	2026-09-08	\N	payment	25000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Lhr+petrol 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-08 20:44:31.729425+00	CPV-21	\N	04c19961-b817-440f-a92f-492ea308ea29	\N
+bfca1fc3-3dc8-4949-ba63-68c0d00a2bd8	2026-09-09	\N	payment	10000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Ad	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-09 22:02:04.382713+00	CPV-22	\N	1aea2139-d6a1-4581-b421-04dee3bb2234	\N
+3402078b-d0d5-4a1a-994a-a7030d7e54de	2026-09-09	\N	payment	20000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Maa g	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-09 22:02:34.857983+00	CPV-23	\N	1aea2139-d6a1-4581-b421-04dee3bb2234	\N
+b9f3674f-7ddf-476d-aaae-1858c0510d55	2026-09-10	4b3d374d-0009-4eb5-bb4d-b91eedba0505	receipt	781050	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-10 21:28:50.408502+00	CRV-21	\N	\N	\N
+8cf7dedc-5d48-49b4-a144-c55a58af4af0	2026-09-10	c424aef7-e930-4e20-bdb2-cd0d4322ef22	payment	50000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-10 21:29:40.414794+00	CPV-24	\N	\N	\N
+9d84cebe-b462-44fb-b989-0258b35d39e3	2026-09-14	ff67951f-a22a-4487-ad34-fae532eb358d	receipt	100000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Chq	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-14 21:35:36.868656+00	CRV-22	\N	\N	\N
+50627880-a028-4180-b1c2-2d12481eb983	2026-09-14	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	100000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Neka pak chq	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-14 21:36:00.716429+00	CPV-27	\N	\N	\N
+10ea2c3b-db0e-41aa-a23a-70989bbced24	2026-09-14	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	34000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-14 21:36:45.116372+00	CRV-23	\N	\N	\N
+04e1dd6f-2898-445a-a265-ed904b6142c7	2026-09-14	c424aef7-e930-4e20-bdb2-cd0d4322ef22	payment	30000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-14 21:37:04.555348+00	CPV-28	\N	\N	\N
+5c4f8384-0272-42b4-9890-979bdcc5086a	2026-09-14	c424aef7-e930-4e20-bdb2-cd0d4322ef22	payment	50000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-14 21:37:20.466786+00	CPV-29	\N	\N	\N
+524eb439-dae2-421e-b0be-1fab339d3b73	2026-09-14	\N	payment	10000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Tyre+fuel	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-14 21:38:08.973414+00	CPV-30	\N	18a17032-5d3c-4f45-8731-7959254e37b0	\N
+6320ba04-b023-496a-ac9e-85ca0cce5c38	2026-09-20	\N	payment	45000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Bumper,lights,paint 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-20 22:01:15.228064+00	CPV-31	\N	04c19961-b817-440f-a92f-492ea308ea29	\N
+decc482e-cf9d-4850-bef6-039e97f2e384	2026-09-20	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	receipt	300000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Online 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-20 22:02:02.443542+00	CRV-24	\N	\N	\N
+c04c8d9b-52bc-4764-9370-64083d62812c	2026-09-20	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	300000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Online	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-20 22:02:34.259082+00	CPV-32	\N	\N	\N
+1776c102-fad0-426f-b7ba-e020730ca7b3	2026-09-20	3df7c6fc-b219-4436-99c4-4caba186a5ae	payment	500000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	5 lakh. Second week of sep	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-20 22:03:50.809097+00	CPV-33	\N	\N	\N
+ef06eaed-7569-4ae5-9c0e-efdddef5d8fa	2026-09-20	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	61000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Karachi fabric	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-20 22:08:17.890724+00	CRV-25	\N	\N	\N
 \.
 
 
@@ -2122,6 +2582,33 @@ e7399901-e484-46a3-95dc-60bc308f5426	faraz	Faraz Islam Butt	t	t	2026-08-02 21:45
 COPY public.stock_movements (id, item_id, movement_date, quantity_in, quantity_out, unit, reference_type, reference_id, created_at) FROM stdin;
 6e35da24-728d-4645-86bc-db7d1d764fd0	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-08-17	500	0	KG	purchase_bill	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-17 22:22:14.92634+00
 3f28f007-52e9-4c19-b9ed-51663a172622	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-08-21	0	500	KG	void	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-21 17:16:12.283392+00
+ee43a43c-88ed-4cdb-b372-0e5a0ad413cd	bc16062b-8939-428a-8872-7a6d4313be26	2026-08-28	0	30	KG	sale_bill	2af26f0a-2772-4fbf-ada3-7fd24f412095	2026-08-28 05:44:42.006853+00
+16347a6a-f024-4312-b912-8c36571c9479	495d1db9-95b6-4be4-9268-226a56554d7a	2026-08-31	0	1600	PCS	sale_bill	42d4600a-20e0-4681-907a-42e33861d4bc	2026-08-31 20:49:09.925778+00
+23f9e9c6-da96-4035-a742-127df50e011a	f2fd52a8-be5e-469d-970a-4e53f9925494	2026-08-31	0	3	PCS	sale_bill	42d4600a-20e0-4681-907a-42e33861d4bc	2026-08-31 20:49:09.925778+00
+1c688a69-b5d4-496d-9432-462f0a57732b	9183c9b2-6fd5-4057-a8aa-b5e264312127	2026-08-31	0	1200	PCS	sale_bill	eb802a96-5a6e-4945-9a9e-b4e136711362	2026-08-31 20:58:35.690412+00
+673ed0dd-7733-43da-92aa-1732be55c671	f2fd52a8-be5e-469d-970a-4e53f9925494	2026-08-31	0	1	PCS	sale_bill	eb802a96-5a6e-4945-9a9e-b4e136711362	2026-08-31 20:58:35.690412+00
+ee9d0a80-2102-4eb9-af97-0d969b890301	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-02	0	58.35	KG	sale_bill	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	2026-09-02 12:51:52.364096+00
+11c651a7-bf97-440a-afdc-230d423019ca	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-02	0	151.7	KG	sale_bill	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	2026-09-02 12:51:52.364096+00
+bc28f003-2686-453a-99ef-7fb75ed9063e	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-02	0	120	KG	sale_bill	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	2026-09-02 12:51:52.364096+00
+e0e98012-ce7b-4914-9f7d-a5473e9f97f3	bc16062b-8939-428a-8872-7a6d4313be26	2026-09-02	0	60	KG	sale_bill	12f790cb-3295-41cd-b7b3-bc4c449d236f	2026-09-02 16:10:23.889506+00
+387682c7-5fc0-4f06-8b75-7752c1436646	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-07	0	298.35	KG	sale_bill	f2e7eca9-ca09-4c2e-be49-ae68b89ce3e1	2026-09-07 12:40:04.318027+00
+f616bc97-2f82-46d9-bdb3-58195796a647	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-07	0	85.7	KG	sale_bill	f2e7eca9-ca09-4c2e-be49-ae68b89ce3e1	2026-09-07 12:40:04.318027+00
+39280341-93d4-48b6-a6ff-d6b4f05b5950	89acf469-10bd-48f9-bcd1-24497e4cf3b3	2026-09-07	0	304.3	KG	sale_bill	800635de-c64c-4384-b623-201051c0b016	2026-09-07 21:30:52.696744+00
+b844f554-8599-410b-bb50-6daa907ae53c	89acf469-10bd-48f9-bcd1-24497e4cf3b3	2026-09-07	0	171.5	KG	sale_bill	800635de-c64c-4384-b623-201051c0b016	2026-09-07 21:30:52.696744+00
+d92b861f-2189-46b1-a08a-b3d868e29363	89acf469-10bd-48f9-bcd1-24497e4cf3b3	2026-09-07	0	158.4	KG	sale_bill	800635de-c64c-4384-b623-201051c0b016	2026-09-07 21:30:52.696744+00
+d7f2c142-352c-4dab-93c6-baa24197f4e0	89acf469-10bd-48f9-bcd1-24497e4cf3b3	2026-09-07	0	111	KG	sale_bill	800635de-c64c-4384-b623-201051c0b016	2026-09-07 21:30:52.696744+00
+da0c2c64-bc28-4ef5-9a92-7fbfd5918b5f	89acf469-10bd-48f9-bcd1-24497e4cf3b3	2026-09-07	0	133.7	KG	sale_bill	800635de-c64c-4384-b623-201051c0b016	2026-09-07 21:30:52.696744+00
+344b1c26-e25a-4399-9048-b2a0520509e9	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-17	0	1498.8	KG	sale_bill	7a7537f6-a64d-42c9-8750-94b1073e5ba0	2026-09-17 20:25:18.668004+00
+c9cbe663-faac-4088-af06-0aa9f5b45213	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-17	0	140.95	KG	sale_bill	7a7537f6-a64d-42c9-8750-94b1073e5ba0	2026-09-17 20:25:18.668004+00
+a3efc779-7220-40de-8507-0119ef13f0fd	9307a034-5509-4f0c-9674-d948f7cd7ece	2026-09-18	0	24.4	KG	sale_bill	e7396391-efd6-47b4-98e0-2c21e0e6b134	2026-09-18 07:05:08.578128+00
+d30ac5d6-9ab5-420d-bfaa-661eda4a3e4f	bc16062b-8939-428a-8872-7a6d4313be26	2026-09-19	0	38	KG	sale_bill	e8d8525c-05dc-4be9-b34f-4215739127d1	2026-09-21 05:43:25.929323+00
+a1015f35-8d78-4104-9f19-5113806368fc	bc16062b-8939-428a-8872-7a6d4313be26	2026-09-21	38	0	KG	void	e8d8525c-05dc-4be9-b34f-4215739127d1	2026-09-21 05:45:04.886335+00
+8766a7d2-367e-4fc5-9c3b-91bd23672844	bc16062b-8939-428a-8872-7a6d4313be26	2026-09-19	0	30	KG	sale_bill	2af7d047-2bf3-4ca9-a2cc-54de244fb80f	2026-09-21 05:46:40.40321+00
+f207a34e-f7ac-419f-957d-6ad92b77f89c	bc16062b-8939-428a-8872-7a6d4313be26	2026-09-19	0	30	KG	sale_bill	2af7d047-2bf3-4ca9-a2cc-54de244fb80f	2026-09-21 05:46:40.40321+00
+109948e9-0808-4151-85aa-9e4a6df0ebe0	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-21	0	302.4	KG	sale_bill	0f3c00aa-1ed9-4cf7-b922-f4742b83352b	2026-09-21 07:29:09.27207+00
+5dccddea-dc6c-4afc-a175-ab2ca623c720	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-21	0	153.1	KG	sale_bill	0f3c00aa-1ed9-4cf7-b922-f4742b83352b	2026-09-21 07:29:09.27207+00
+7fb81eed-e622-49e4-b8e1-1f768adfb2e1	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-15	0	274.85	KG	sale_bill	ce232888-9819-4d54-9640-cce5c9095487	2026-09-22 12:19:35.670979+00
+1e168770-089a-42d3-81b8-73a088aabf28	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-09-15	0	259.65	KG	sale_bill	ce232888-9819-4d54-9640-cce5c9095487	2026-09-22 12:19:35.670979+00
 \.
 
 
@@ -2143,14 +2630,14 @@ SELECT pg_catalog.setval('public.brv_seq', 1, false);
 -- Name: cpv_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.cpv_seq', 11, true);
+SELECT pg_catalog.setval('public.cpv_seq', 33, true);
 
 
 --
 -- Name: crv_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.crv_seq', 12, true);
+SELECT pg_catalog.setval('public.crv_seq', 25, true);
 
 
 --
@@ -2185,7 +2672,7 @@ SELECT pg_catalog.setval('public.purchase_return_seq', 1, false);
 -- Name: sale_invoice_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.sale_invoice_seq', 1, true);
+SELECT pg_catalog.setval('public.sale_invoice_seq', 14, true);
 
 
 --
@@ -2232,6 +2719,14 @@ ALTER TABLE ONLY public.brand_settings
 
 ALTER TABLE ONLY public.chart_of_accounts
     ADD CONSTRAINT chart_of_accounts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: document_audit_log document_audit_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_audit_log
+    ADD CONSTRAINT document_audit_log_pkey PRIMARY KEY (id);
 
 
 --
@@ -2387,6 +2882,27 @@ ALTER TABLE ONLY public.stock_movements
 
 
 --
+-- Name: document_audit_log_action_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX document_audit_log_action_idx ON public.document_audit_log USING btree (action);
+
+
+--
+-- Name: document_audit_log_brand_key_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX document_audit_log_brand_key_idx ON public.document_audit_log USING btree (brand_key);
+
+
+--
+-- Name: document_audit_log_performed_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX document_audit_log_performed_at_idx ON public.document_audit_log USING btree (performed_at DESC);
+
+
+--
 -- Name: invoice_items_fulfilled_from_item_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2478,11 +2994,27 @@ CREATE INDEX stock_movements_reference_type_reference_id_idx ON public.stock_mov
 
 
 --
+-- Name: chart_of_accounts chart_of_accounts_brand_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chart_of_accounts
+    ADD CONSTRAINT chart_of_accounts_brand_key_fkey FOREIGN KEY (brand_key) REFERENCES public.brand_settings(brand_key);
+
+
+--
 -- Name: chart_of_accounts chart_of_accounts_parent_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.chart_of_accounts
     ADD CONSTRAINT chart_of_accounts_parent_account_id_fkey FOREIGN KEY (parent_account_id) REFERENCES public.chart_of_accounts(id);
+
+
+--
+-- Name: document_audit_log document_audit_log_performed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_audit_log
+    ADD CONSTRAINT document_audit_log_performed_by_fkey FOREIGN KEY (performed_by) REFERENCES auth.users(id);
 
 
 --
@@ -2765,6 +3297,13 @@ CREATE POLICY "admin can manage profiles" ON public.profiles USING (public.is_ad
 
 
 --
+-- Name: document_audit_log admin can view document audit log; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "admin can view document audit log" ON public.document_audit_log FOR SELECT USING (public.is_admin());
+
+
+--
 -- Name: app_settings admin manages app settings; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -2823,10 +3362,10 @@ CREATE POLICY "app settings readable by dashboard view" ON public.app_settings F
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
 
 --
--- Name: brand_settings brand settings readable by all authenticated; Type: POLICY; Schema: public; Owner: -
+-- Name: brand_settings brand settings readable by permitted users; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY "brand settings readable by all authenticated" ON public.brand_settings FOR SELECT USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY "brand settings readable by permitted users" ON public.brand_settings FOR SELECT USING (public.has_any_permission());
 
 
 --
@@ -2836,10 +3375,10 @@ CREATE POLICY "brand settings readable by all authenticated" ON public.brand_set
 ALTER TABLE public.brand_settings ENABLE ROW LEVEL SECURITY;
 
 --
--- Name: chart_of_accounts chart of accounts readable by all authenticated; Type: POLICY; Schema: public; Owner: -
+-- Name: chart_of_accounts chart of accounts readable by permitted users; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY "chart of accounts readable by all authenticated" ON public.chart_of_accounts FOR SELECT USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY "chart of accounts readable by permitted users" ON public.chart_of_accounts FOR SELECT USING (public.has_any_permission());
 
 
 --
@@ -2847,6 +3386,12 @@ CREATE POLICY "chart of accounts readable by all authenticated" ON public.chart_
 --
 
 ALTER TABLE public.chart_of_accounts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: document_audit_log; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.document_audit_log ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: expenses; Type: ROW SECURITY; Schema: public; Owner: -
@@ -2909,10 +3454,10 @@ ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;
 
 --
--- Name: items items readable by all authenticated; Type: POLICY; Schema: public; Owner: -
+-- Name: items items readable by permitted users; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY "items readable by all authenticated" ON public.items FOR SELECT USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY "items readable by permitted users" ON public.items FOR SELECT USING (public.has_any_permission());
 
 
 --
@@ -2967,10 +3512,10 @@ ALTER TABLE public.page_permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.parties ENABLE ROW LEVEL SECURITY;
 
 --
--- Name: parties parties readable by all authenticated; Type: POLICY; Schema: public; Owner: -
+-- Name: parties parties readable by permitted users; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY "parties readable by all authenticated" ON public.parties FOR SELECT USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY "parties readable by permitted users" ON public.parties FOR SELECT USING (public.has_any_permission());
 
 
 --
@@ -3044,5 +3589,5 @@ ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict T7ZkLgLB06vgF9oiZFv2IzF4TS18QEvyImaxEG2eIUfnpzjzXU8b0zCfdUvrUNy
+\unrestrict 723IRgy5MRdhAhH52GpXYIwIiSdSQWyFnodRxGPeXVxSVhhVIHNyYoP9pAaedtV
 
