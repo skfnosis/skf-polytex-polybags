@@ -4,6 +4,7 @@ import {
   LogOut, Search, Plus, X, Calendar, ChevronRight, FileSpreadsheet,
   ArrowUpRight, ArrowDownRight, ShieldCheck, Menu, AlertTriangle, Wallet, Landmark,
   BookOpen, Home, Package, Eye, EyeOff, Pencil, Printer, FileText, Image, Share2, Trash2,
+  Check, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { supabase } from './supabaseClient.js';
 import logoSkfPolytex from './assets/logo-skf-polytex.png';
@@ -29,11 +30,15 @@ function loadPdfLibs() {
 let _pdfjsPromise = null;
 function loadPdfJs() {
   if (!_pdfjsPromise) {
-    _pdfjsPromise = Promise.all([import('pdfjs-dist'), import('pdfjs-dist/build/pdf.worker.min.mjs?url')])
-      .then(([pdfjsLib, workerUrlMod]) => {
+    // pdf.js v3 on purpose: v4+ needs Promise.withResolvers (Chrome 119+) and
+    // fails on older browsers such as Chrome 109 (the last one on Windows 7).
+    _pdfjsPromise = Promise.all([import('pdfjs-dist/build/pdf'), import('pdfjs-dist/build/pdf.worker.min.js?url')])
+      .then(([mod, workerUrlMod]) => {
+        const pdfjsLib = mod && mod.getDocument ? mod : mod.default;
         pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrlMod.default;
         return pdfjsLib;
-      });
+      })
+      .catch((e) => { _pdfjsPromise = null; throw e; });
   }
   return _pdfjsPromise;
 }
@@ -137,15 +142,34 @@ function maskPkr(amount, visible) {
   return visible ? formatPkr(amount) : MASKED_AMOUNT;
 }
 
+// A date-only string ("2026-10-01") is a calendar day, not an instant: read
+// it as that day in local time, never as UTC midnight (which can land on the
+// previous/next day depending on the time zone).
+function parseLocalDate(d) {
+  if (typeof d === 'string') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return new Date(d);
+  }
+  return d;
+}
+
 function formatDate(d) {
   if (!d) return '';
-  const dt = typeof d === 'string' ? new Date(d) : d;
+  const dt = parseLocalDate(d);
+  if (Number.isNaN(dt.getTime())) return '';
   return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+// "YYYY-MM-DD" for <input type="date"> in LOCAL time. (toISOString() is UTC,
+// which in Pakistan (UTC+5) turned "1 Oct 00:00" into 30 Sept.)
 function toDateInput(d) {
-  const dt = typeof d === 'string' ? new Date(d) : d;
-  return dt.toISOString().split('T')[0];
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const dt = parseLocalDate(d);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 function startOfMonth() {
@@ -400,26 +424,49 @@ async function updateAppSettings({ lowCashThreshold, highPayablesThreshold }) {
   if (error) throw error;
 }
 
+// Supabase returns at most 1000 rows per request, silently. A busy account
+// would otherwise get a truncated ledger and a WRONG opening/closing balance,
+// so read in pages until everything is fetched.
+async function fetchAllPages(buildQuery) {
+  const PAGE = 1000;
+  const all = [];
+  for (let start = 0; ; start += PAGE) {
+    const { data, error } = await buildQuery().range(start, start + PAGE - 1);
+    if (error) throw error;
+    all.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return all;
+}
+
 async function fetchAccountLedger(accountId, { from, to } = {}) {
   let openingBalance = 0;
   if (from) {
-    const { data: prior, error: priorError } = await supabase.from('ledger_entries')
-      .select('debit, credit').eq('account_id', accountId).lt('entry_date', from);
-    if (priorError) throw priorError;
-    openingBalance = (prior || []).reduce((s, r) => s + Number(r.debit) - Number(r.credit), 0);
+    const prior = await fetchAllPages(() => supabase.from('ledger_entries')
+      .select('id, debit, credit').eq('account_id', accountId).lt('entry_date', from).order('id'));
+    openingBalance = prior.reduce((s, r) => s + Number(r.debit) - Number(r.credit), 0);
   }
 
-  let q = supabase.from('ledger_entries').select('*, parties(name)').eq('account_id', accountId);
-  if (from) q = q.gte('entry_date', from);
-  if (to) q = q.lte('entry_date', to);
-  const { data, error } = await q.order('entry_date').order('created_at');
-  if (error) throw error;
+  const data = await fetchAllPages(() => {
+    let q = supabase.from('ledger_entries').select('*, parties(name)').eq('account_id', accountId);
+    if (from) q = q.gte('entry_date', from);
+    if (to) q = q.lte('entry_date', to);
+    return q.order('entry_date').order('created_at').order('id');
+  });
   let running = openingBalance;
-  const rows = (data || []).map((r) => {
+  const rows = data.map((r) => {
     running += Number(r.debit) - Number(r.credit);
     return { ...r, running_balance: running };
   });
   return { rows, openingBalance };
+}
+
+// Totals shown at the foot of the General Ledger (screen, PDF and Excel).
+function ledgerTotals(rows, openingBalance) {
+  const totalDebit = rows.reduce((s, r) => s + (Number(r.debit) || 0), 0);
+  const totalCredit = rows.reduce((s, r) => s + (Number(r.credit) || 0), 0);
+  const closing = (Number(openingBalance) || 0) + totalDebit - totalCredit;
+  return { totalDebit, totalCredit, closing };
 }
 
 async function fetchCashBankBalances() {
@@ -2214,20 +2261,26 @@ function AccountListModal({ open, onClose, title, rows, renderRow }) {
 
 function AccountLedgerBody({ account, from, to }) {
   const [data, setData] = useState(null);
+  const [loadError, setLoadError] = useState('');
   const [showReport, setShowReport] = useState(false);
 
   useEffect(() => {
     if (!account) { setData(null); return; }
     let alive = true;
     setData(null);
-    fetchAccountLedger(account.id, { from, to }).then((r) => { if (alive) setData(r); });
+    setLoadError('');
+    fetchAccountLedger(account.id, { from, to })
+      .then((r) => { if (alive) setData(r); })
+      .catch((e) => { if (alive) setLoadError(e?.message || 'Could not load the ledger.'); });
     return () => { alive = false; };
   }, [account, from, to]);
 
   if (!account) return null;
+  if (loadError) return <EmptyState>Could not load the ledger: {loadError}</EmptyState>;
   if (data === null) return <div className="py-10 flex justify-center"><Spinner /></div>;
 
   const rows = data.rows;
+  const totals = ledgerTotals(rows, data.openingBalance);
 
   return (
     <div className="space-y-3">
@@ -2269,6 +2322,18 @@ function AccountLedgerBody({ account, from, to }) {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="border-t-2 font-semibold" style={{ borderColor: THEME.line, backgroundColor: THEME.surface }}>
+                <td className="px-3 py-2.5" colSpan={3}>Total</td>
+                <td className="px-3 py-2.5 whitespace-nowrap">{formatPkr(totals.totalDebit)}</td>
+                <td className="px-3 py-2.5 whitespace-nowrap">{formatPkr(totals.totalCredit)}</td>
+                <td className="px-3 py-2.5" />
+              </tr>
+              <tr className="font-semibold" style={{ backgroundColor: THEME.surface }}>
+                <td className="px-3 py-2.5" colSpan={5}>Closing Balance</td>
+                <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: THEME.blue }}>{formatPkr(totals.closing)}</td>
+              </tr>
+            </tfoot>
           </table>
         </Card>
       )}
@@ -2281,6 +2346,8 @@ function AccountLedgerBody({ account, from, to }) {
           rows: [
             ...(data.openingBalance ? [['', '', 'Opening Balance', '', '', data.openingBalance]] : []),
             ...rows.map((r) => [formatDate(r.entry_date), r.doc_no || '', r.narration || '', Number(r.debit) || '', Number(r.credit) || '', r.running_balance]),
+            ['', '', 'Total', totals.totalDebit, totals.totalCredit, ''],
+            ['', '', 'Closing Balance', '', '', totals.closing],
           ],
         }}
       />
@@ -2327,13 +2394,16 @@ async function buildLedgerPdf({ account, rows, openingBalance, from, to }) {
       r.debit > 0 ? formatPkr(r.debit) : '', r.credit > 0 ? formatPkr(r.credit) : '', formatPkr(r.running_balance),
     ]),
   ];
-  const closing = rows.length > 0 ? rows[rows.length - 1].running_balance : openingBalance;
+  const { totalDebit, totalCredit, closing } = ledgerTotals(rows, openingBalance);
 
   autoTable(doc, {
     startY: 35,
     head: [['Date', 'Voucher No.', 'Narration', 'Debit', 'Credit', 'Balance']],
     body,
-    foot: [['', '', '', '', 'Closing Balance', formatPkr(closing)]],
+    foot: [
+      ['', '', 'Total', formatPkr(totalDebit), formatPkr(totalCredit), ''],
+      ['', '', '', '', 'Closing Balance', formatPkr(closing)],
+    ],
     headStyles: { fillColor: [227, 230, 236], textColor: [18, 20, 28], fontStyle: 'bold' },
     footStyles: { fillColor: [247, 248, 250], textColor: [18, 20, 28], fontStyle: 'bold' },
     styles: { fontSize: 8.5, cellPadding: 3 },
@@ -2491,7 +2561,7 @@ function DashboardScreen({ onNavigate }) {
   const salesTotal = salesOverview.reduce((s, r) => s + Number(r.amount), 0);
 
   const graphData = monthlyBreakdown.map((r) => ({
-    month: new Date(r.month).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
+    month: parseLocalDate(r.month).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
     total: Number(r.profit),
     sales: Number(r.total_sales),
     fabric_sales: Number(r.fabric_sales),
@@ -2721,7 +2791,7 @@ function DashboardScreen({ onNavigate }) {
             <tbody>
               {monthlyBreakdown.map((r) => (
                 <tr key={r.month} className="border-b last:border-0" style={{ borderColor: THEME.line }}>
-                  <td className="py-2 pr-3 whitespace-nowrap">{new Date(r.month).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}</td>
+                  <td className="py-2 pr-3 whitespace-nowrap">{parseLocalDate(r.month).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}</td>
                   <td className="py-2 pr-3 text-right">{formatPkr(r.fabric_sales)}</td>
                   <td className="py-2 pr-3 text-right">{formatPkr(r.polybag_sales)}</td>
                   <td className="py-2 pr-3 text-right font-medium">{formatPkr(r.total_sales)}</td>
@@ -3066,6 +3136,371 @@ function PurchaseModule({ initialTab, initialMode }) {
   );
 }
 
+// ============================================================================
+// INVOICE LINE ENTRY — shared by the Purchase and Sale entry forms.
+//
+// Instead of a grid of always-open blank rows, the user fills ONE entry line
+// (Item → Narration → Qty → Unit → Rate), presses Enter on Rate (or "Save
+// line"), and it moves into the saved-lines list above while a fresh empty
+// entry line is ready. Saved lines are compact rows: tap one to edit it,
+// or use X to delete it.
+// ============================================================================
+
+// Qty accepts a running sum, like a calculator: "58.3+151.7+120" or
+// "=58.3+151.7+120" -> 330. Only plus is supported (by design). A trailing
+// "+" is tolerated while typing.
+function evalQtyExpr(raw) {
+  const s = String(raw ?? '').replace(/\s+/g, '').replace(/^=/, '');
+  if (s === '') return { ok: true, value: null };
+  const parts = s.split('+').filter((p) => p !== '');
+  if (parts.length === 0) return { ok: false, value: null };
+  let total = 0;
+  for (const p of parts) {
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(p)) return { ok: false, value: null };
+    total += parseFloat(p);
+  }
+  return { ok: true, value: Math.round(total * 1e6) / 1e6 };
+}
+
+function qtyNumber(raw) {
+  const r = evalQtyExpr(raw);
+  return r.ok && r.value != null ? r.value : 0;
+}
+
+// A line is "ready" when it has an item, a quantity > 0 and a rate typed in.
+function isLineReady(l) {
+  return !!l.itemId && qtyNumber(l.quantity) > 0 && String(l.rate ?? '').trim() !== '' && Number(l.rate) >= 0;
+}
+
+function normalizeLine(l) {
+  const q = evalQtyExpr(l.quantity);
+  return { ...l, quantity: q.ok && q.value != null ? String(q.value) : String(l.quantity ?? '') };
+}
+
+// Saved lines + whatever is currently typed in the entry line (so a line the
+// user typed but never "saved" is not silently lost when they save the
+// invoice, and totals always match what will be posted).
+function composeLines(lines, draft, editIndex) {
+  if (!isLineReady(draft)) return lines;
+  const d = normalizeLine(draft);
+  if (editIndex != null && editIndex >= 0 && editIndex < lines.length) {
+    return lines.map((l, i) => (i === editIndex ? d : l));
+  }
+  return [...lines, d];
+}
+
+function useInvoiceLines(makeBlank) {
+  const [lines, setLines] = useState([]);
+  const [draft, setDraft] = useState(() => makeBlank());
+  const [editIndex, setEditIndex] = useState(null);
+  const refs = useRef({
+    item: React.createRef(), narration: React.createRef(), qty: React.createRef(),
+    unit: React.createRef(), rate: React.createRef(), color: React.createRef(), gsm: React.createRef(),
+  });
+  const allLines = useMemo(() => composeLines(lines, draft, editIndex), [lines, draft, editIndex]);
+  const draftDirty = String(draft.quantity ?? '').trim() !== '' || String(draft.rate ?? '').trim() !== ''
+    || !!(draft.narration && draft.narration.trim());
+  const isDirty = lines.length > 0 || draftDirty;
+  function reset(blank) {
+    setLines([]);
+    setDraft(blank);
+    setEditIndex(null);
+  }
+  return { lines, setLines, draft, setDraft, editIndex, setEditIndex, refs, allLines, isDirty, draftDirty, reset };
+}
+
+const QtyInput = React.forwardRef(function QtyInput({ value, onChange, onCommit, onEnter, label = 'Qty' }, ref) {
+  const res = evalQtyExpr(value);
+  const raw = String(value ?? '');
+  const showSum = res.ok && res.value != null && /[+=]/.test(raw);
+  function commit() {
+    const r = evalQtyExpr(raw);
+    if (r.ok && r.value != null) {
+      const v = String(r.value);
+      // onCommit (when given) must not clear a validation message the way a
+      // normal keystroke does — finalizing a sum happens as focus moves away.
+      if (v !== raw) (onCommit || onChange)(v);
+    }
+    return r.ok;
+  }
+  return (
+    <div>
+      <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
+      <div className="flex gap-1">
+        <input
+          ref={ref}
+          type="text" inputMode="decimal" autoComplete="off"
+          placeholder="e.g. 50+25"
+          value={raw}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (commit()) onEnter?.();
+            }
+          }}
+          className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-offset-0"
+          style={{ borderColor: res.ok ? THEME.line : THEME.danger, '--tw-ring-color': THEME.blue }}
+        />
+        <button
+          type="button" tabIndex={-1} title="Add another quantity" aria-label="Add another quantity"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => { onChange(`${raw.replace(/\+$/, '')}+`); ref?.current?.focus(); }}
+          className="shrink-0 rounded-lg border px-3 text-lg font-semibold hover:bg-gray-50"
+          style={{ borderColor: THEME.line, color: THEME.blue }}
+        >+</button>
+      </div>
+      {/* Fixed-height hint line: if it appeared/disappeared the form would
+          shift under the user's finger while they tap "Save line". */}
+      <p className="text-xs mt-1 h-4 truncate font-medium" style={{ color: res.ok ? THEME.blue : THEME.danger }}>
+        {!res.ok ? 'Use numbers like 58.3+151.7' : showSum ? `= ${res.value}` : ''}
+      </p>
+    </div>
+  );
+});
+
+function InvoiceLineEntry({ lineState, brandCategory, units, blank, onPickItem, showSellTo, onFocusAfterSave }) {
+  const { lines, setLines, draft, setDraft, editIndex, setEditIndex, refs } = lineState;
+  const [error, setError] = useState('');
+  const isFabric = brandCategory === 'fabric';
+  const editing = editIndex != null;
+
+  function patch(p) { setDraft((d) => ({ ...d, ...p })); setError(''); }
+  function focusItem() { requestAnimationFrame(() => refs.current.item.current?.focus()); }
+
+  function saveLine() {
+    const q = evalQtyExpr(draft.quantity);
+    if (!draft.itemId) { setError('Pick an item first.'); refs.current.item.current?.focus(); return; }
+    if (!draft.unit) { setError('Pick a unit (KG or PCS).'); refs.current.unit.current?.focus(); return; }
+    if (!q.ok || !(q.value > 0)) { setError('Enter a quantity greater than 0.'); refs.current.qty.current?.focus(); return; }
+    if (String(draft.rate ?? '').trim() === '' || !(Number(draft.rate) >= 0)) {
+      setError('Enter the rate (0 if free).'); refs.current.rate.current?.focus(); return;
+    }
+    const line = normalizeLine(draft);
+    if (editing) {
+      setLines((ls) => ls.map((l, i) => (i === editIndex ? line : l)));
+      setEditIndex(null);
+    } else {
+      setLines((ls) => [...ls, line]);
+    }
+    setError('');
+    setDraft({ ...blank(), unit: draft.unit || blank().unit });
+    onFocusAfterSave?.();
+    focusItem();
+  }
+
+  function startEdit(i) {
+    setDraft({ ...lines[i] });
+    setEditIndex(i);
+    setError('');
+    focusItem();
+  }
+  function cancelEdit() {
+    setEditIndex(null);
+    setDraft(blank());
+    setError('');
+  }
+  function removeAt(i) {
+    setLines((ls) => ls.filter((_, idx) => idx !== i));
+    if (editIndex === i) { setEditIndex(null); setDraft(blank()); }
+    else if (editIndex != null && i < editIndex) setEditIndex(editIndex - 1);
+  }
+
+  const amount = qtyNumber(draft.quantity) * (Number(draft.rate) || 0);
+
+  return (
+    <div>
+      {/* Saved lines — compact, invoice style */}
+      <Card className="overflow-hidden mb-3" style={{ borderColor: THEME.line }}>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ backgroundColor: THEME.surface }}>
+              <th className="text-left font-medium px-3 py-2 w-8">#</th>
+              <th className="text-left font-medium px-3 py-2">Item</th>
+              <th className="text-right font-medium px-3 py-2">Qty</th>
+              <th className="text-right font-medium px-3 py-2">Rate</th>
+              <th className="text-right font-medium px-3 py-2">Amount</th>
+              <th className="px-2 py-2 w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {lines.length === 0 && (
+              <tr><td colSpan={6} className="px-3 py-4 text-center text-gray-400">No lines yet — fill the line below and press Enter on Rate.</td></tr>
+            )}
+            {lines.map((l, i) => (
+              <tr
+                key={i}
+                onClick={() => startEdit(i)}
+                className={cx('border-t cursor-pointer hover:bg-gray-50', editIndex === i && 'bg-blue-50')}
+                style={{ borderColor: THEME.line }}
+                title="Tap to edit"
+              >
+                <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                <td className="px-3 py-2">
+                  <div className="font-medium">{l.itemName}</div>
+                  {(l.narration || l.color || l.gsm) && (
+                    <div className="text-xs text-gray-500">{[l.narration, l.color, l.gsm && `${l.gsm} GSM`].filter(Boolean).join(' · ')}</div>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right whitespace-nowrap">{l.quantity} {l.unit}</td>
+                <td className="px-3 py-2 text-right whitespace-nowrap">{Number(l.rate) || 0}</td>
+                <td className="px-3 py-2 text-right font-medium whitespace-nowrap">{formatPkr(qtyNumber(l.quantity) * (Number(l.rate) || 0))}</td>
+                <td className="px-2 py-2 text-right">
+                  <button
+                    type="button" aria-label="Delete line" title="Delete line"
+                    onClick={(e) => { e.stopPropagation(); removeAt(i); }}
+                    className="text-gray-400 hover:text-red-500 p-1 -m-1"
+                  ><X size={18} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* The entry line */}
+      <Card className="p-3 space-y-3" style={{ borderColor: editing ? THEME.blue : THEME.line }}>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-gray-500">{editing ? `Editing line ${editIndex + 1}` : `New line ${lines.length + 1}`}</span>
+          {editing && <button type="button" onClick={cancelEdit} className="text-xs underline text-gray-500">Cancel edit</button>}
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-start">
+          <div className="col-span-2 md:col-span-3">
+            <ItemPicker
+              category={brandCategory}
+              value={draft.itemId ? { id: draft.itemId, name: draft.itemName } : null}
+              onChange={(it) => { onPickItem(it, draft, patch); }}
+              resetKey={`${draft.itemId || 'empty'}-${lines.length}-${editIndex ?? 'n'}`}
+              inputRef={refs.current.item}
+              onEnterNext={() => (isFabric ? refs.current.color : refs.current.narration).current?.focus()}
+            />
+          </div>
+          {isFabric && (
+            <>
+              <div className="col-span-1 md:col-span-2">
+                <Input ref={refs.current.color} label="Color (optional)" value={draft.color || ''} placeholder="e.g. Sky Blue"
+                  onChange={(e) => patch({ color: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); refs.current.gsm.current?.focus(); } }} />
+              </div>
+              <div className="col-span-1 md:col-span-1">
+                <Input ref={refs.current.gsm} label="GSM" value={draft.gsm || ''} placeholder="120"
+                  onChange={(e) => patch({ gsm: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); refs.current.narration.current?.focus(); } }} />
+              </div>
+            </>
+          )}
+          <div className={cx('col-span-2', isFabric ? 'md:col-span-2' : 'md:col-span-3')}>
+            <Input ref={refs.current.narration} label="Narration (optional)" value={draft.narration || ''} placeholder="e.g. 18-08-26"
+              onChange={(e) => patch({ narration: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); refs.current.qty.current?.focus(); } }} />
+          </div>
+          <div className="col-span-1 md:col-span-2">
+            <QtyInput ref={refs.current.qty} value={draft.quantity}
+              onChange={(v) => patch({ quantity: v })}
+              onCommit={(v) => setDraft((d) => ({ ...d, quantity: v }))}
+              onEnter={() => refs.current.unit.current?.focus()} />
+          </div>
+          <div className="col-span-1 md:col-span-1">
+            <Select ref={refs.current.unit} label="Unit" value={draft.unit} onChange={(e) => patch({ unit: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); refs.current.rate.current?.focus(); } }}>
+              <option value="">—</option>
+              {units.map((u) => <option key={u} value={u}>{u}</option>)}
+            </Select>
+          </div>
+          <div className="col-span-1 md:col-span-2">
+            <Input ref={refs.current.rate} type="number" inputMode="decimal" label="Rate" value={draft.rate}
+              onChange={(e) => patch({ rate: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveLine(); } }} />
+          </div>
+          <div className="col-span-1 md:col-span-1">
+            <span className="block text-sm font-medium text-gray-700 mb-1">Amount</span>
+            <div className="py-2.5 text-sm font-medium whitespace-nowrap">{formatPkr(amount)}</div>
+          </div>
+        </div>
+        {showSellTo && (
+          <div className="max-w-sm">
+            <PartyPicker
+              type="customer"
+              value={draft.reservedForPartyId ? { id: draft.reservedForPartyId, name: draft.reservedForPartyName } : null}
+              onChange={(p) => patch({ reservedForPartyId: p?.id || null, reservedForPartyName: p?.name || '' })}
+              resetKey={`${draft.reservedForPartyId || 'none'}-${lines.length}-${editIndex ?? 'n'}`}
+              label="Sell to (optional)"
+            />
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button onMouseDown={(e) => e.preventDefault()} onClick={saveLine} icon={editing ? Check : Plus}>{editing ? 'Update line' : 'Save line'}</Button>
+          {error && <span className="text-sm" style={{ color: THEME.danger }}>{error}</span>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Minimize / expand for the Old lists (Purchase, Sale, Voucher, Journal and
+// their Report tabs). Minimized rows show only number, date/party and amount;
+// the action icons appear when a row is expanded. The last choice is
+// remembered on this device.
+// ----------------------------------------------------------------------------
+const MINIMIZE_KEY = 'skf_rows_minimized';
+
+function useRowMinimize() {
+  const [minimized, setMinimized] = useState(() => {
+    try { return localStorage.getItem(MINIMIZE_KEY) === '1'; } catch { return false; }
+  });
+  // Per-row overrides: id -> true (open) / false (closed). Cleared whenever
+  // "Minimize all" / "Expand all" is pressed.
+  const [overrides, setOverrides] = useState({});
+  const isOpen = (id) => (id in overrides ? overrides[id] : !minimized);
+  const toggle = (id) => setOverrides((o) => ({ ...o, [id]: !(id in o ? o[id] : !minimized) }));
+  const setAll = (min) => {
+    setMinimized(min);
+    setOverrides({});
+    try { localStorage.setItem(MINIMIZE_KEY, min ? '1' : '0'); } catch { /* storage unavailable — fine */ }
+  };
+  return { minimized, isOpen, toggle, setAll };
+}
+
+function MinimizeBar({ mini }) {
+  return (
+    <div className="flex justify-end mb-2">
+      <button
+        type="button" onClick={() => mini.setAll(!mini.minimized)}
+        className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border hover:bg-gray-50"
+        style={{ borderColor: THEME.line, color: THEME.ink }}
+      >
+        {mini.minimized ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        {mini.minimized ? 'Expand all' : 'Minimize all'}
+      </button>
+    </div>
+  );
+}
+
+function RowChevron({ open, onClick }) {
+  return (
+    <button
+      type="button" onClick={onClick}
+      title={open ? 'Minimize' : 'Show actions'} aria-label={open ? 'Minimize' : 'Show actions'} aria-expanded={open}
+      className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500"
+    >
+      {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+    </button>
+  );
+}
+
+// The document number doubles as a "preview" link.
+function DocNoLink({ onClick, children }) {
+  return (
+    <button
+      type="button" onClick={onClick} title="Preview"
+      className="text-left font-medium hover:underline"
+      style={{ color: THEME.blue }}
+    >{children}</button>
+  );
+}
+
 function emptyPurchaseLine(defaultItem) {
   return {
     itemId: defaultItem?.id || null, itemName: defaultItem?.name || '',
@@ -3089,7 +3524,8 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
   const [vendorResetKey, setVendorResetKey] = useState(0);
   const [date, setDate] = useState(toDateInput(new Date()));
   const [defaultItem, setDefaultItem] = useState(null);
-  const [lines, setLines] = useState([emptyPurchaseLine()]);
+  const lineState = useInvoiceLines(() => emptyPurchaseLine());
+  const { lines, setLines, draft, setDraft, allLines } = lineState;
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [previewNo, setPreviewNo] = useState('');
@@ -3118,23 +3554,13 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
 
   const dateRef = useRef(null);
   const vendorRef = useRef(null);
-  const lineRefs = useRef({});
-  function getLineRefs(i) {
-    if (!lineRefs.current[i]) {
-      lineRefs.current[i] = {
-        item: React.createRef(), unit: React.createRef(), qty: React.createRef(),
-        rate: React.createRef(), color: React.createRef(), gsm: React.createRef(), narration: React.createRef(),
-      };
-    }
-    return lineRefs.current[i];
-  }
 
   const isDirty = !!vendor || !!supplierInvoiceNo.trim() || !!linkedOrder
-    || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
+    || lineState.isDirty;
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
   const draftKey = editInvoiceId ? `skf_draft_purchase_edit_${editInvoiceId}` : `skf_draft_purchase_${invoiceType}`;
-  const draftSnapshot = { brandKey: brand?.brand_key, vendor: vendor ? { id: vendor.id, name: vendor.name } : null, date, supplierInvoiceNo, lines };
+  const draftSnapshot = { brandKey: brand?.brand_key, vendor: vendor ? { id: vendor.id, name: vendor.name } : null, date, supplierInvoiceNo, lines, draft };
   const { restorable: draftRestorable, clearDraft, dismissRestore } = useDraftAutosave(draftKey, draftSnapshot, isDirty);
 
   function restoreDraft() {
@@ -3147,7 +3573,8 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     if (d.vendor) { setVendor(d.vendor); setVendorResetKey((k) => k + 1); }
     if (d.date) setDate(d.date);
     if (d.supplierInvoiceNo) setSupplierInvoiceNo(d.supplierInvoiceNo);
-    if (Array.isArray(d.lines) && d.lines.length) setLines(d.lines);
+    if (Array.isArray(d.lines)) setLines(d.lines.filter((l) => l.itemId && qtyNumber(l.quantity) > 0));
+    if (d.draft) setDraft(d.draft);
     clearDraft();
   }
 
@@ -3187,7 +3614,6 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
           reservedForPartyId: it.reserved_for_party_id || null, reservedForPartyName: it.parties?.name || '',
         })));
         setEditInvoiceNo(invoice.invoice_no);
-        lineRefs.current = {};
         if (invoice.linked_order_id) {
           try {
             const { invoice: order } = await fetchInvoiceWithItems(invoice.linked_order_id);
@@ -3220,9 +3646,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
       if (!alive) return;
       setDefaultItem(item);
       if (item) {
-        setLines((ls) => (ls.length === 1 && !ls[0].itemId
-          ? [{ ...ls[0], itemId: item.id, itemName: item.name }]
-          : ls));
+        setDraft((d) => (d.itemId ? d : { ...d, itemId: item.id, itemName: item.name, itemType: item.item_type || 'product' }));
       }
     });
     return () => { alive = false; };
@@ -3234,39 +3658,21 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
       return;
     }
     setBrand(b);
-    setLines([emptyPurchaseLine(b?.category === 'polybags' ? defaultItem : null)]);
+    lineState.reset(emptyPurchaseLine(b?.category === 'polybags' ? defaultItem : null));
     setVendor(null);
     setVendorResetKey((k) => k + 1);
     setLinkedOrder(null);
     setSupplierInvoiceNo('');
     setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
-    lineRefs.current = {};
   }
 
-  function addLine(focus = true) {
-    setLines((ls) => {
-      const next = [...ls, emptyPurchaseLine(defaultItem)];
-      if (focus) {
-        const idx = next.length - 1;
-        requestAnimationFrame(() => getLineRefs(idx).item.current?.focus());
-      }
-      return next;
-    });
-  }
-  function updateLine(i, patch) {
-    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
-  }
-  function removeLine(i) {
-    setLines((ls) => (ls.length === 1 ? ls : ls.filter((_, idx) => idx !== i)));
-  }
-
-  function pickItemForLine(i, item) {
-    updateLine(i, {
+  function pickItem(item, current, patch) {
+    patch({
       itemId: item.id,
       itemName: item.name,
       itemType: item.item_type || 'product',
       unit: item.default_unit || purchaseUnitOptionsFor(brand?.category)[0],
-      rate: item.last_purchase_rate != null && !lines[i].rate ? String(item.last_purchase_rate) : lines[i].rate,
+      rate: item.last_purchase_rate != null && !current.rate ? String(item.last_purchase_rate) : current.rate,
     });
   }
 
@@ -3279,6 +3685,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     try {
       const { items } = await fetchInvoiceWithItems(order.id);
       setLinkedOrder(order);
+      lineState.setEditIndex(null);
       setLines(items.map((it) => ({
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
         itemType: it.items?.item_type || 'product',
@@ -3291,25 +3698,25 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
     }
   }
 
-  const subtotal = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
+  const subtotal = allLines.reduce((s, l) => s + qtyNumber(l.quantity) * (Number(l.rate) || 0), 0);
   const grandTotal = isBill
     ? subtotal + (Number(transport) || 0) + (Number(loadingCharge) || 0) + (Number(tax) || 0) - (Number(discount) || 0)
     : subtotal;
 
   function resetForm() {
-    setLines([emptyPurchaseLine(defaultItem)]);
+    lineState.reset(emptyPurchaseLine(defaultItem));
     setVendor(null);
     setVendorResetKey((k) => k + 1);
     setSupplierInvoiceNo('');
     setLinkedOrder(null);
     setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
-    lineRefs.current = {};
     requestAnimationFrame(() => dateRef.current?.focus());
   }
 
   async function save(closeAfter) {
     if (!brand || !vendor) { show('Pick a category and a vendor.', 'danger'); return; }
-    const validLines = lines.filter((l) => l.itemId && Number(l.quantity) > 0 && Number(l.rate) >= 0);
+    if (lineState.draftDirty && !isLineReady(draft)) { show('Finish or clear the line you are typing (item, quantity and rate) before saving.', 'danger'); return; }
+    const validLines = allLines.filter((l) => l.itemId && l.unit && Number(l.quantity) > 0 && Number(l.rate) >= 0);
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
@@ -3362,9 +3769,9 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
     };
-    const pseudoItems = lines.filter((l) => l.itemId).map((l) => ({
+    const pseudoItems = allLines.filter((l) => l.itemId).map((l) => ({
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
-      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration, color: l.color, gsm: l.gsm,
+      amount: qtyNumber(l.quantity) * (Number(l.rate) || 0), narration: l.narration, color: l.color, gsm: l.gsm,
     }));
     return { pseudoInvoice, pseudoItems };
   }
@@ -3401,100 +3808,6 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
 
   const units = purchaseUnitOptionsFor(brand.category);
 
-  function lineFields(i, line) {
-    return {
-      item: (
-        <ItemPicker
-          category={brand.category}
-          value={line.itemId ? { id: line.itemId, name: line.itemName } : null}
-          onChange={(it) => pickItemForLine(i, it)}
-          resetKey={`${i}-${line.itemId || 'empty'}`}
-          inputRef={getLineRefs(i).item}
-          onEnterNext={() => getLineRefs(i).unit.current?.focus()}
-        />
-      ),
-      unit: (
-        <Select
-          ref={getLineRefs(i).unit}
-          label="Unit"
-          value={line.unit}
-          onChange={(e) => updateLine(i, { unit: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).qty.current?.focus(); } }}
-        >
-          <option value="">—</option>
-          {units.map((u) => <option key={u} value={u}>{u}</option>)}
-        </Select>
-      ),
-      qty: (
-        <Input
-          ref={getLineRefs(i).qty}
-          type="number" label="Qty" value={line.quantity}
-          onChange={(e) => updateLine(i, { quantity: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).rate.current?.focus(); } }}
-        />
-      ),
-      rate: (
-        <Input
-          ref={getLineRefs(i).rate}
-          type="number" label="Rate" value={line.rate}
-          onChange={(e) => updateLine(i, { rate: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              const next = brand.category === 'fabric' ? getLineRefs(i).color : getLineRefs(i).narration;
-              next.current?.focus();
-            }
-          }}
-        />
-      ),
-      color: (
-        <Input
-          ref={getLineRefs(i).color}
-          label="Color (optional)" value={line.color}
-          placeholder="e.g. Sky Blue"
-          onChange={(e) => updateLine(i, { color: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).gsm.current?.focus(); } }}
-        />
-      ),
-      gsm: (
-        <Input
-          ref={getLineRefs(i).gsm}
-          label="GSM (optional)" value={line.gsm}
-          placeholder="e.g. 120"
-          onChange={(e) => updateLine(i, { gsm: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).narration.current?.focus(); } }}
-        />
-      ),
-      narration: (
-        <Input
-          ref={getLineRefs(i).narration}
-          label="Narration (optional)" value={line.narration}
-          placeholder="e.g. Order A"
-          onChange={(e) => updateLine(i, { narration: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              if (i === lines.length - 1) addLine();
-              else getLineRefs(i + 1).item.current?.focus();
-            }
-          }}
-        />
-      ),
-      // Earmarks this line for a customer — surfaced as a suggestion (with
-      // auto-fill) when that customer's Sale Bill is entered later. Bill only.
-      sellTo: (
-        <PartyPicker
-          type="customer"
-          value={line.reservedForPartyId ? { id: line.reservedForPartyId, name: line.reservedForPartyName } : null}
-          onChange={(p) => updateLine(i, { reservedForPartyId: p?.id || null, reservedForPartyName: p?.name || '' })}
-          resetKey={`${i}-${line.reservedForPartyId || 'none'}`}
-          label="Sell to (optional)"
-        />
-      ),
-      amount: formatPkr((Number(line.quantity) || 0) * (Number(line.rate) || 0)),
-    };
-  }
-
   return (
     <div className="max-w-5xl">
       <h2 className="font-display font-semibold text-lg mb-4">
@@ -3514,7 +3827,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
         <PartyPicker
           type="supplier" value={vendor} onChange={setVendor}
           resetKey={vendorResetKey} inputRef={vendorRef} label="Vendor"
-          onEnterNext={() => getLineRefs(0).item.current?.focus()}
+          onEnterNext={() => lineState.refs.current.item.current?.focus()}
         />
       </div>
 
@@ -3536,83 +3849,11 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
         </Card>
       )}
 
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-medium text-sm text-gray-700">Line items</h3>
-        <Button variant="ghost" icon={Plus} onClick={() => addLine()}>Add line</Button>
-      </div>
-
-      {/* Desktop / tablet: Excel-like grid */}
-      <Card className="hidden md:block overflow-auto" style={{ borderColor: THEME.line }}>
-        <table className="w-full text-sm">
-          <thead>
-            <tr style={{ backgroundColor: THEME.surface }}>
-              <th className="text-left font-medium px-3 py-2.5 w-1/3">Item</th>
-              <th className="text-left font-medium px-3 py-2.5">Unit</th>
-              <th className="text-left font-medium px-3 py-2.5">Qty</th>
-              <th className="text-left font-medium px-3 py-2.5">Rate</th>
-              {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">Color</th>}
-              {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">GSM</th>}
-              <th className="text-left font-medium px-3 py-2.5 w-1/5">Narration</th>
-              {isBill && <th className="text-left font-medium px-3 py-2.5 w-1/5">Sell to</th>}
-              <th className="text-left font-medium px-3 py-2.5">Amount</th>
-              <th className="px-2 py-2.5" />
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((line, i) => {
-              const f = lineFields(i, line);
-              return (
-                <tr key={i} className="border-t align-top" style={{ borderColor: THEME.line }}>
-                  <td className="px-3 py-2">{f.item}</td>
-                  <td className="px-3 py-2 w-28">{f.unit}</td>
-                  <td className="px-3 py-2 w-24">{f.qty}</td>
-                  <td className="px-3 py-2 w-28">{f.rate}</td>
-                  {brand.category === 'fabric' && <td className="px-3 py-2">{f.color}</td>}
-                  {brand.category === 'fabric' && <td className="px-3 py-2">{f.gsm}</td>}
-                  <td className="px-3 py-2">{f.narration}</td>
-                  {isBill && <td className="px-3 py-2">{f.sellTo}</td>}
-                  <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
-                  <td className="px-2 py-2 pt-4">
-                    <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
-                      <X size={18} />
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </Card>
-
-      {/* Mobile: step-card entry */}
-      <div className="md:hidden space-y-3">
-        {lines.map((line, i) => {
-          const f = lineFields(i, line);
-          return (
-            <Card key={i} className="p-3 space-y-3" style={{ borderColor: THEME.line }}>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-gray-500">Line {i + 1}</span>
-                <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
-                  <X size={18} />
-                </button>
-              </div>
-              {f.item}
-              <div className="grid grid-cols-2 gap-3">{f.unit}{f.qty}</div>
-              <div className="grid grid-cols-2 gap-3 items-end">
-                {f.rate}
-                <div>
-                  <span className="block text-sm font-medium text-gray-700 mb-1">Amount</span>
-                  <div className="px-3 py-2.5 text-sm font-medium">{f.amount}</div>
-                </div>
-              </div>
-              {brand.category === 'fabric' && f.color}
-              {brand.category === 'fabric' && f.gsm}
-              {f.narration}
-              {isBill && f.sellTo}
-            </Card>
-          );
-        })}
-      </div>
+      <h3 className="font-medium text-sm text-gray-700 mb-2">Line items</h3>
+      <InvoiceLineEntry
+        lineState={lineState} brandCategory={brand.category} units={units}
+        blank={() => emptyPurchaseLine(defaultItem)} onPickItem={pickItem} showSellTo={isBill}
+      />
 
       <div className="flex items-center justify-end gap-2 mt-5 mb-6">
         <span className="text-gray-500">{isBill ? 'Grand Total:' : 'Total:'}</span>
@@ -3635,7 +3876,7 @@ function PurchaseEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyCh
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
-        Enter moves Date → Vendor → Item → Unit → Qty → Rate → Narration → next line. F2 on the vendor field adds a vendor, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
+        Enter moves Date → Vendor → Item → Narration → Qty → Unit → Rate, and Enter on Rate saves the line and opens a new one. In Qty you can add numbers, e.g. 50+25+10. F2 on the vendor field adds a vendor, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
       </p>
       <DocReportModal
         open={showReport} onClose={() => setShowReport(false)}
@@ -4045,11 +4286,13 @@ function PurchaseOldList({ invoiceType, onEdit }) {
   const [reservationInfo, setReservationInfo] = useState({});
   const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
+  const mini = useRowMinimize();
 
   useEffect(() => {
     let alive = true;
     setRows(null);
-    fetchInvoices({ invoiceType, from, to, partyId: vendor?.id, invoiceNo }).then((r) => { if (alive) setRows(r); });
+    fetchInvoices({ invoiceType, from, to, partyId: vendor?.id, invoiceNo }).then((r) => { if (alive) setRows(r); })
+      .catch((e) => { if (alive) { setRows([]); show(`Could not load: ${e.message}`, 'danger'); } });
     if (invoiceType === 'purchase') {
       fetchInvoices({ invoiceType: 'purchase_order', from: '2000-01-01', to: '2999-12-31' }).then((orders) => {
         if (!alive) return;
@@ -4174,12 +4417,14 @@ function PurchaseOldList({ invoiceType, onEdit }) {
       ) : filtered.length === 0 ? (
         <EmptyState>No {purchaseDocLabel(invoiceType).toLowerCase()} records in this range.</EmptyState>
       ) : (
+        <>
+        <MinimizeBar mini={mini} />
         <Card className="divide-y" style={{ borderColor: THEME.line }}>
           {filtered.map((row) => (
             <div key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
               <div className="flex-1 min-w-[180px]">
                 <div className="font-medium flex items-center gap-2">
-                  {row.invoice_no}
+                  <DocNoLink onClick={() => handleView(row)}>{row.invoice_no}</DocNoLink>
                   {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
                   {reservationInfo[row.id] && (
                     reservationInfo[row.id].billed >= reservationInfo[row.id].total
@@ -4195,7 +4440,8 @@ function PurchaseOldList({ invoiceType, onEdit }) {
                 <div className="text-xs text-gray-500">{formatDate(row.invoice_date)} · {row.parties?.name}</div>
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
-              <div className="flex items-center gap-1">
+              <RowChevron open={mini.isOpen(row.id)} onClick={() => mini.toggle(row.id)} />
+              <div className={cx('items-center gap-1', mini.isOpen(row.id) ? 'flex' : 'hidden')}>
                 <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
@@ -4230,6 +4476,7 @@ function PurchaseOldList({ invoiceType, onEdit }) {
             </div>
           ))}
         </Card>
+        </>
       )}
 
       <PurchaseViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
@@ -4364,7 +4611,8 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
   const [customerResetKey, setCustomerResetKey] = useState(0);
   const [date, setDate] = useState(toDateInput(new Date()));
   const [defaultItem, setDefaultItem] = useState(null);
-  const [lines, setLines] = useState([emptySaleLine()]);
+  const lineState = useInvoiceLines(() => emptySaleLine());
+  const { lines, setLines, draft, setDraft, allLines } = lineState;
   const [saving, setSaving] = useState(false);
   const [savedNo, setSavedNo] = useState(null);
   const [previewNo, setPreviewNo] = useState('');
@@ -4394,23 +4642,13 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
 
   const dateRef = useRef(null);
   const customerRef = useRef(null);
-  const lineRefs = useRef({});
-  function getLineRefs(i) {
-    if (!lineRefs.current[i]) {
-      lineRefs.current[i] = {
-        item: React.createRef(), unit: React.createRef(), qty: React.createRef(),
-        rate: React.createRef(), color: React.createRef(), gsm: React.createRef(), narration: React.createRef(),
-      };
-    }
-    return lineRefs.current[i];
-  }
 
   const isDirty = !!customer || !!customerPoNo.trim() || !!linkedOrder
-    || lines.some((l) => Number(l.quantity) > 0 || Number(l.rate) > 0 || (l.narration && l.narration.trim()));
+    || lineState.isDirty;
   const { showUnsavedConfirm, stayOnPage, leavePage } = useUnsavedChangesGuard(isDirty);
 
   const draftKey = editInvoiceId ? `skf_draft_sale_edit_${editInvoiceId}` : `skf_draft_sale_${invoiceType}`;
-  const draftSnapshot = { brandKey: brand?.brand_key, customer: customer ? { id: customer.id, name: customer.name } : null, date, customerPoNo, lines };
+  const draftSnapshot = { brandKey: brand?.brand_key, customer: customer ? { id: customer.id, name: customer.name } : null, date, customerPoNo, lines, draft };
   const { restorable: draftRestorable, clearDraft, dismissRestore } = useDraftAutosave(draftKey, draftSnapshot, isDirty);
 
   function restoreDraft() {
@@ -4423,7 +4661,8 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     if (d.customer) { setCustomer(d.customer); setCustomerResetKey((k) => k + 1); }
     if (d.date) setDate(d.date);
     if (d.customerPoNo) setCustomerPoNo(d.customerPoNo);
-    if (Array.isArray(d.lines) && d.lines.length) setLines(d.lines);
+    if (Array.isArray(d.lines)) setLines(d.lines.filter((l) => l.itemId && qtyNumber(l.quantity) > 0));
+    if (d.draft) setDraft(d.draft);
     clearDraft();
   }
 
@@ -4463,7 +4702,6 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
           fulfilledFromItemId: it.fulfilled_from_item_id || null,
         })));
         setEditInvoiceNo(invoice.invoice_no);
-        lineRefs.current = {};
         if (invoice.linked_order_id) {
           try {
             const { invoice: order } = await fetchInvoiceWithItems(invoice.linked_order_id);
@@ -4498,19 +4736,19 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
   }, [isBill, customer]);
 
   function fillLineFromReservation(res) {
-    setLines((ls) => {
-      // A line pre-filled by the default-item logic (itemId set, no qty
-      // entered yet) is still "empty" for this purpose — overwrite it
-      // instead of appending a duplicate line.
-      const emptyIdx = ls.findIndex((l) => !Number(l.quantity));
-      const filled = {
-        itemId: res.item_id, itemName: res.item_name || res.description || '',
-        itemType: res.item_type || 'product', unit: res.unit,
-        quantity: String(res.quantity), rate: '', narration: '',
-        fulfilledFromItemId: res.id,
-      };
-      if (emptyIdx !== -1) return ls.map((l, idx) => (idx === emptyIdx ? filled : l));
-      return [...ls, filled];
+    // Load the suggestion into the entry line so the rate can be typed, then
+    // saved like any other line. Only if the entry line is free.
+    if (lineState.draftDirty) {
+      show('Save the line you are typing first, then pick this suggestion.', 'danger');
+      return;
+    }
+    lineState.setEditIndex(null);
+    setDraft({
+      ...emptySaleLine(),
+      itemId: res.item_id, itemName: res.item_name || res.description || '',
+      itemType: res.item_type || 'product', unit: res.unit,
+      quantity: String(res.quantity), rate: '', narration: '',
+      fulfilledFromItemId: res.id,
     });
     setOpenReservations((rs) => rs.filter((r) => r.id !== res.id));
   }
@@ -4523,9 +4761,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
       if (!alive) return;
       setDefaultItem(item);
       if (item) {
-        setLines((ls) => (ls.length === 1 && !ls[0].itemId
-          ? [{ ...ls[0], itemId: item.id, itemName: item.name }]
-          : ls));
+        setDraft((d) => (d.itemId ? d : { ...d, itemId: item.id, itemName: item.name, itemType: item.item_type || 'product' }));
       }
     });
     return () => { alive = false; };
@@ -4537,39 +4773,21 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
       return;
     }
     setBrand(b);
-    setLines([emptySaleLine(b?.category === 'polybags' ? defaultItem : null)]);
+    lineState.reset(emptySaleLine(b?.category === 'polybags' ? defaultItem : null));
     setCustomer(null);
     setCustomerResetKey((k) => k + 1);
     setLinkedOrder(null);
     setCustomerPoNo('');
     setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
-    lineRefs.current = {};
   }
 
-  function addLine(focus = true) {
-    setLines((ls) => {
-      const next = [...ls, emptySaleLine(defaultItem)];
-      if (focus) {
-        const idx = next.length - 1;
-        requestAnimationFrame(() => getLineRefs(idx).item.current?.focus());
-      }
-      return next;
-    });
-  }
-  function updateLine(i, patch) {
-    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
-  }
-  function removeLine(i) {
-    setLines((ls) => (ls.length === 1 ? ls : ls.filter((_, idx) => idx !== i)));
-  }
-
-  function pickItemForLine(i, item) {
-    updateLine(i, {
+  function pickItem(item, current, patch) {
+    patch({
       itemId: item.id,
       itemName: item.name,
       itemType: item.item_type || 'product',
       unit: item.default_unit || purchaseUnitOptionsFor(brand?.category)[0],
-      rate: item.last_sale_rate != null && !lines[i].rate ? String(item.last_sale_rate) : lines[i].rate,
+      rate: item.last_sale_rate != null && !current.rate ? String(item.last_sale_rate) : current.rate,
     });
   }
 
@@ -4582,6 +4800,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     try {
       const { items } = await fetchInvoiceWithItems(order.id);
       setLinkedOrder(order);
+      lineState.setEditIndex(null);
       setLines(items.map((it) => ({
         itemId: it.item_id, itemName: it.items?.name || it.description || '',
         itemType: it.items?.item_type || 'product',
@@ -4594,25 +4813,25 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
     }
   }
 
-  const subtotal = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
+  const subtotal = allLines.reduce((s, l) => s + qtyNumber(l.quantity) * (Number(l.rate) || 0), 0);
   const grandTotal = isBill
     ? subtotal + (Number(transport) || 0) + (Number(loadingCharge) || 0) + (Number(tax) || 0) - (Number(discount) || 0)
     : subtotal;
 
   function resetForm() {
-    setLines([emptySaleLine(defaultItem)]);
+    lineState.reset(emptySaleLine(defaultItem));
     setCustomer(null);
     setCustomerResetKey((k) => k + 1);
     setCustomerPoNo('');
     setLinkedOrder(null);
     setTransport('0'); setLoadingCharge('0'); setDiscount('0'); setTax('0');
-    lineRefs.current = {};
     requestAnimationFrame(() => dateRef.current?.focus());
   }
 
   async function save(closeAfter) {
     if (!brand || !customer) { show('Pick a category and a customer.', 'danger'); return; }
-    const validLines = lines.filter((l) => l.itemId && Number(l.quantity) > 0 && Number(l.rate) >= 0);
+    if (lineState.draftDirty && !isLineReady(draft)) { show('Finish or clear the line you are typing (item, quantity and rate) before saving.', 'danger'); return; }
+    const validLines = allLines.filter((l) => l.itemId && l.unit && Number(l.quantity) > 0 && Number(l.rate) >= 0);
     if (validLines.length === 0) { show('Add at least one line item.', 'danger'); return; }
     setSaving(true);
     try {
@@ -4665,9 +4884,9 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
       transport_charges: transport, loading_charges: loadingCharge, discount_amount: discount, tax_amount: tax,
       total_amount: grandTotal,
     };
-    const pseudoItems = lines.filter((l) => l.itemId).map((l) => ({
+    const pseudoItems = allLines.filter((l) => l.itemId).map((l) => ({
       items: { name: l.itemName }, unit: l.unit, quantity: l.quantity, rate: l.rate,
-      amount: (Number(l.quantity) || 0) * (Number(l.rate) || 0), narration: l.narration, color: l.color, gsm: l.gsm,
+      amount: qtyNumber(l.quantity) * (Number(l.rate) || 0), narration: l.narration, color: l.color, gsm: l.gsm,
     }));
     return { pseudoInvoice, pseudoItems };
   }
@@ -4704,89 +4923,6 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
 
   const units = purchaseUnitOptionsFor(brand.category);
 
-  function lineFields(i, line) {
-    return {
-      item: (
-        <ItemPicker
-          category={brand.category}
-          value={line.itemId ? { id: line.itemId, name: line.itemName } : null}
-          onChange={(it) => pickItemForLine(i, it)}
-          resetKey={`${i}-${line.itemId || 'empty'}`}
-          inputRef={getLineRefs(i).item}
-          onEnterNext={() => getLineRefs(i).unit.current?.focus()}
-        />
-      ),
-      unit: (
-        <Select
-          ref={getLineRefs(i).unit}
-          label="Unit"
-          value={line.unit}
-          onChange={(e) => updateLine(i, { unit: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).qty.current?.focus(); } }}
-        >
-          <option value="">—</option>
-          {units.map((u) => <option key={u} value={u}>{u}</option>)}
-        </Select>
-      ),
-      qty: (
-        <Input
-          ref={getLineRefs(i).qty}
-          type="number" label="Qty" value={line.quantity}
-          onChange={(e) => updateLine(i, { quantity: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).rate.current?.focus(); } }}
-        />
-      ),
-      rate: (
-        <Input
-          ref={getLineRefs(i).rate}
-          type="number" label="Rate" value={line.rate}
-          onChange={(e) => updateLine(i, { rate: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              const next = brand.category === 'fabric' ? getLineRefs(i).color : getLineRefs(i).narration;
-              next.current?.focus();
-            }
-          }}
-        />
-      ),
-      color: (
-        <Input
-          ref={getLineRefs(i).color}
-          label="Color (optional)" value={line.color}
-          placeholder="e.g. Sky Blue"
-          onChange={(e) => updateLine(i, { color: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).gsm.current?.focus(); } }}
-        />
-      ),
-      gsm: (
-        <Input
-          ref={getLineRefs(i).gsm}
-          label="GSM (optional)" value={line.gsm}
-          placeholder="e.g. 120"
-          onChange={(e) => updateLine(i, { gsm: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); getLineRefs(i).narration.current?.focus(); } }}
-        />
-      ),
-      narration: (
-        <Input
-          ref={getLineRefs(i).narration}
-          label="Narration (optional)" value={line.narration}
-          placeholder="e.g. Order A"
-          onChange={(e) => updateLine(i, { narration: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              if (i === lines.length - 1) addLine();
-              else getLineRefs(i + 1).item.current?.focus();
-            }
-          }}
-        />
-      ),
-      amount: formatPkr((Number(line.quantity) || 0) * (Number(line.rate) || 0)),
-    };
-  }
-
   return (
     <div className="max-w-5xl">
       <h2 className="font-display font-semibold text-lg mb-4">
@@ -4806,7 +4942,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
         <PartyPicker
           type="customer" value={customer} onChange={setCustomer}
           resetKey={customerResetKey} inputRef={customerRef} label="Customer"
-          onEnterNext={() => getLineRefs(0).item.current?.focus()}
+          onEnterNext={() => lineState.refs.current.item.current?.focus()}
         />
       </div>
 
@@ -4855,80 +4991,11 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
         </Card>
       )}
 
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-medium text-sm text-gray-700">Line items</h3>
-        <Button variant="ghost" icon={Plus} onClick={() => addLine()}>Add line</Button>
-      </div>
-
-      {/* Desktop / tablet: Excel-like grid */}
-      <Card className="hidden md:block overflow-auto" style={{ borderColor: THEME.line }}>
-        <table className="w-full text-sm">
-          <thead>
-            <tr style={{ backgroundColor: THEME.surface }}>
-              <th className="text-left font-medium px-3 py-2.5 w-1/3">Item</th>
-              <th className="text-left font-medium px-3 py-2.5">Unit</th>
-              <th className="text-left font-medium px-3 py-2.5">Qty</th>
-              <th className="text-left font-medium px-3 py-2.5">Rate</th>
-              {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">Color</th>}
-              {brand.category === 'fabric' && <th className="text-left font-medium px-3 py-2.5">GSM</th>}
-              <th className="text-left font-medium px-3 py-2.5 w-1/5">Narration</th>
-              <th className="text-left font-medium px-3 py-2.5">Amount</th>
-              <th className="px-2 py-2.5" />
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((line, i) => {
-              const f = lineFields(i, line);
-              return (
-                <tr key={i} className="border-t align-top" style={{ borderColor: THEME.line }}>
-                  <td className="px-3 py-2">{f.item}</td>
-                  <td className="px-3 py-2 w-28">{f.unit}</td>
-                  <td className="px-3 py-2 w-24">{f.qty}</td>
-                  <td className="px-3 py-2 w-28">{f.rate}</td>
-                  {brand.category === 'fabric' && <td className="px-3 py-2">{f.color}</td>}
-                  {brand.category === 'fabric' && <td className="px-3 py-2">{f.gsm}</td>}
-                  <td className="px-3 py-2">{f.narration}</td>
-                  <td className="px-3 py-2 w-28 pt-4 font-medium">{f.amount}</td>
-                  <td className="px-2 py-2 pt-4">
-                    <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
-                      <X size={18} />
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </Card>
-
-      {/* Mobile: step-card entry */}
-      <div className="md:hidden space-y-3">
-        {lines.map((line, i) => {
-          const f = lineFields(i, line);
-          return (
-            <Card key={i} className="p-3 space-y-3" style={{ borderColor: THEME.line }}>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-gray-500">Line {i + 1}</span>
-                <button onClick={() => removeLine(i)} aria-label="Remove line" title="Remove line" className="text-gray-400 hover:text-red-500 p-1 -m-1">
-                  <X size={18} />
-                </button>
-              </div>
-              {f.item}
-              <div className="grid grid-cols-2 gap-3">{f.unit}{f.qty}</div>
-              <div className="grid grid-cols-2 gap-3 items-end">
-                {f.rate}
-                <div>
-                  <span className="block text-sm font-medium text-gray-700 mb-1">Amount</span>
-                  <div className="px-3 py-2.5 text-sm font-medium">{f.amount}</div>
-                </div>
-              </div>
-              {brand.category === 'fabric' && f.color}
-              {brand.category === 'fabric' && f.gsm}
-              {f.narration}
-            </Card>
-          );
-        })}
-      </div>
+      <h3 className="font-medium text-sm text-gray-700 mb-2">Line items</h3>
+      <InvoiceLineEntry
+        lineState={lineState} brandCategory={brand.category} units={units}
+        blank={() => emptySaleLine(defaultItem)} onPickItem={pickItem} showSellTo={false}
+      />
 
       <div className="flex items-center justify-end gap-2 mt-5 mb-6">
         <span className="text-gray-500">{isBill ? 'Grand Total:' : 'Total:'}</span>
@@ -4951,7 +5018,7 @@ function SaleEntryForm({ invoiceType, editInvoiceId, onSavedClose, onDirtyChange
         {savedNo && <Badge tone="success">Last saved: {savedNo}</Badge>}
       </div>
       <p className="text-xs text-gray-500 mt-2">
-        Enter moves Date → Customer → Item → Unit → Qty → Rate → Narration → next line. F2 on the customer field adds a customer, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
+        Enter moves Date → Customer → Item → Narration → Qty → Unit → Rate, and Enter on Rate saves the line and opens a new one. In Qty you can add numbers, e.g. 50+25+10. F2 on the customer field adds a customer, F3 on an item field adds an item. Ctrl+S saves, Ctrl+P prints the draft.
       </p>
       <DocReportModal
         open={showReport} onClose={() => setShowReport(false)}
@@ -5047,11 +5114,13 @@ function SaleOldList({ invoiceType, onEdit }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
+  const mini = useRowMinimize();
 
   useEffect(() => {
     let alive = true;
     setRows(null);
-    fetchInvoices({ invoiceType, from, to, partyId: customer?.id, invoiceNo }).then((r) => { if (alive) setRows(r); });
+    fetchInvoices({ invoiceType, from, to, partyId: customer?.id, invoiceNo }).then((r) => { if (alive) setRows(r); })
+      .catch((e) => { if (alive) { setRows([]); show(`Could not load: ${e.message}`, 'danger'); } });
     if (invoiceType === 'sale') {
       fetchInvoices({ invoiceType: 'sale_order', from: '2000-01-01', to: '2999-12-31' }).then((orders) => {
         if (!alive) return;
@@ -5152,12 +5221,14 @@ function SaleOldList({ invoiceType, onEdit }) {
       ) : filtered.length === 0 ? (
         <EmptyState>No {saleDocLabel(invoiceType).toLowerCase()} records in this range.</EmptyState>
       ) : (
+        <>
+        <MinimizeBar mini={mini} />
         <Card className="divide-y" style={{ borderColor: THEME.line }}>
           {filtered.map((row) => (
             <div key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
               <div className="flex-1 min-w-[180px]">
                 <div className="font-medium flex items-center gap-2">
-                  {row.invoice_no}
+                  <DocNoLink onClick={() => handleView(row)}>{row.invoice_no}</DocNoLink>
                   {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
                   {invoiceType === 'sale' && orderLookup[row.linked_order_id] && (
                     <span className="text-xs text-gray-400">from {orderLookup[row.linked_order_id]}</span>
@@ -5166,7 +5237,8 @@ function SaleOldList({ invoiceType, onEdit }) {
                 <div className="text-xs text-gray-500">{formatDate(row.invoice_date)} · {row.parties?.name}</div>
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
-              <div className="flex items-center gap-1">
+              <RowChevron open={mini.isOpen(row.id)} onClick={() => mini.toggle(row.id)} />
+              <div className={cx('items-center gap-1', mini.isOpen(row.id) ? 'flex' : 'hidden')}>
                 <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
@@ -5201,6 +5273,7 @@ function SaleOldList({ invoiceType, onEdit }) {
             </div>
           ))}
         </Card>
+        </>
       )}
 
       <SaleViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
@@ -5621,12 +5694,14 @@ function VoucherOldList({ tab, readOnly }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
+  const mini = useRowMinimize();
 
   useEffect(() => {
     let alive = true;
     setRows(null);
     fetchPayments({ direction: tab.direction, kind: tab.kind, from, to, partyId: party?.id, voucherNo })
-      .then((r) => { if (alive) setRows(r); });
+      .then((r) => { if (alive) setRows(r); })
+      .catch((e) => { if (alive) { setRows([]); show(`Could not load: ${e.message}`, 'danger'); } });
     return () => { alive = false; };
   }, [tab, from, to, party, voucherNo, refreshKey]);
 
@@ -5696,18 +5771,21 @@ function VoucherOldList({ tab, readOnly }) {
       ) : rows.length === 0 ? (
         <EmptyState>No {tab.label.toLowerCase()} vouchers in this range.</EmptyState>
       ) : (
+        <>
+        <MinimizeBar mini={mini} />
         <Card className="divide-y" style={{ borderColor: THEME.line }}>
           {rows.map((row) => (
             <div key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
               <div className="flex-1 min-w-[180px]">
                 <div className="font-medium flex items-center gap-2">
-                  {row.voucher_no}
+                  <DocNoLink onClick={() => setViewPayment(row)}>{row.voucher_no}</DocNoLink>
                   {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
                 </div>
                 <div className="text-xs text-gray-500">{formatDate(row.payment_date)} · {paymentRecipientLabel(row)}</div>
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.amount)}</div>
-              <div className="flex items-center gap-1">
+              <RowChevron open={mini.isOpen(row.id)} onClick={() => mini.toggle(row.id)} />
+              <div className={cx('items-center gap-1', mini.isOpen(row.id) ? 'flex' : 'hidden')}>
                 <button onClick={() => setViewPayment(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
@@ -5740,6 +5818,7 @@ function VoucherOldList({ tab, readOnly }) {
             </div>
           ))}
         </Card>
+        </>
       )}
       <SimpleReportModal
         open={!!reportRow} onClose={() => setReportRow(null)}
@@ -6119,11 +6198,13 @@ function JournalVoucherOldList({ readOnly } = {}) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [savingImageId, setSavingImageId] = useState(null);
   const { show, ToastHost } = useToast();
+  const mini = useRowMinimize();
 
   useEffect(() => {
     let alive = true;
     setRows(null);
-    fetchJournalVouchers({ from, to, voucherNo }).then((r) => { if (alive) setRows(r); });
+    fetchJournalVouchers({ from, to, voucherNo }).then((r) => { if (alive) setRows(r); })
+      .catch((e) => { if (alive) { setRows([]); show(`Could not load: ${e.message}`, 'danger'); } });
     return () => { alive = false; };
   }, [from, to, voucherNo, refreshKey]);
 
@@ -6198,18 +6279,21 @@ function JournalVoucherOldList({ readOnly } = {}) {
       ) : rows.length === 0 ? (
         <EmptyState>No general vouchers in this range.</EmptyState>
       ) : (
+        <>
+        <MinimizeBar mini={mini} />
         <Card className="divide-y" style={{ borderColor: THEME.line }}>
           {rows.map((row) => (
             <div key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
               <div className="flex-1 min-w-[180px]">
                 <div className="font-medium flex items-center gap-2">
-                  {row.voucher_no}
+                  <DocNoLink onClick={() => handleView(row)}>{row.voucher_no}</DocNoLink>
                   {row.status === 'voided' && <Badge tone="danger">Voided</Badge>}
                 </div>
                 <div className="text-xs text-gray-500">{formatDate(row.voucher_date)}{row.narration ? ` · ${row.narration}` : ''}</div>
               </div>
               <div className="font-semibold w-28 text-right" style={{ color: THEME.blue }}>{formatPkr(row.total_amount)}</div>
-              <div className="flex items-center gap-1">
+              <RowChevron open={mini.isOpen(row.id)} onClick={() => mini.toggle(row.id)} />
+              <div className={cx('items-center gap-1', mini.isOpen(row.id) ? 'flex' : 'hidden')}>
                 <button onClick={() => handleView(row)} title="View" aria-label="View" className="p-2.5 rounded-lg hover:bg-gray-100 text-gray-500">
                   <Search size={16} />
                 </button>
@@ -6242,6 +6326,7 @@ function JournalVoucherOldList({ readOnly } = {}) {
             </div>
           ))}
         </Card>
+        </>
       )}
 
       <JournalVoucherViewModal doc={viewDoc} onClose={() => setViewDoc(null)} />
@@ -6946,6 +7031,9 @@ function referenceLabel(type) {
     case 'payment': return 'Payment';
     case 'opening_balance': return 'Opening balance';
     case 'void': return 'Void / reversal';
+    case 'invoice_edit': return 'Edit correction';
+    case 'journal_voucher': return 'Journal voucher';
+    case 'expense': return 'Expense';
     default: return type;
   }
 }
