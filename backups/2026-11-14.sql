@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict nPju4elT6CxEC3rUSQ0R033QDzoS7wnZppBYg3Llc4b8ULAvznpz0DnZY5bAhxZ
+\restrict P7EpEsKbvbRu53AxSfdcTcIZKADMJsgsCeQ4fKOeFfEczQUjSCTMXynLx4cfxy0
 
 -- Dumped from database version 17.6
--- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
+-- Dumped by pg_dump version 17.12 (Ubuntu 17.12-1.pgdg26.04+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -2137,8 +2137,10 @@ b414cafa-9164-4c44-a264-fb62a28206c1	SKF PolyTex Sales	sales	f	2026-09-02 17:14:
 --
 
 COPY public.document_audit_log (id, action, doc_family, doc_type, doc_no, doc_date, brand_key, party_name, amount, performed_by, performed_by_name, performed_at, snapshot) FROM stdin;
+f2e8b8ea-1d63-4ab5-b922-f71a21b0ccf6	deleted	invoice	purchase	PI-03	2026-08-17	skf_polybags	ZAK ENTERPRISES	500000	3b485a4c-5dcb-4a33-885c-7a9f62427783	Admin	2026-10-30 18:25:51.498708+00	{"items": [{"id": "bc70f6c0-5a98-4b94-a316-7973770aa3a5", "gsm": null, "rate": 1000, "unit": "KG", "color": null, "amount": 500000, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 500, "narration": "Check", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}], "invoice": {"id": "aab8c3ef-5ba3-49dc-8859-05cb730c6ec7", "status": "voided", "category": "polybags", "party_id": "3df7c6fc-b219-4436-99c4-4caba186a5ae", "brand_key": "skf_polybags", "narration": null, "voided_at": "2026-08-21T17:16:12.283392+00:00", "voided_by": "3b485a4c-5dcb-4a33-885c-7a9f62427783", "created_at": "2026-08-17T22:22:14.92634+00:00", "created_by": "3b485a4c-5dcb-4a33-885c-7a9f62427783", "invoice_no": "PI-03", "tax_amount": 0, "void_reason": "Checking", "invoice_date": "2026-08-17", "invoice_type": "purchase", "total_amount": 500000, "customer_po_no": null, "discount_amount": 0, "linked_order_id": null, "loading_charges": 0, "transport_charges": 0, "supplier_invoice_no": "468"}}
 14f15be8-806f-495d-ad7f-9eb7f47af55a	deleted	payment	cpv	CPV-51	2026-10-12	\N	ZAK ENTERPRISES	300000	3b485a4c-5dcb-4a33-885c-7a9f62427783	Admin	2026-10-14 06:09:26.752612+00	{"payment": {"id": "c04c3c53-bb7e-4adf-9918-9f6bb38a234b", "notes": "From Awami", "amount": 300000, "method": "cash", "status": "voided", "party_id": "3df7c6fc-b219-4436-99c4-4caba186a5ae", "cheque_no": null, "direction": "payment", "voided_at": "2026-10-14T06:09:19.27389+00:00", "voided_by": "3b485a4c-5dcb-4a33-885c-7a9f62427783", "created_at": "2026-10-12T19:52:44.936962+00:00", "created_by": "3b485a4c-5dcb-4a33-885c-7a9f62427783", "voucher_no": "CPV-51", "void_reason": "double", "payment_date": "2026-10-12", "direct_account_id": null, "linked_invoice_id": null, "cash_bank_account_id": "46ff676e-30cb-49e1-901b-f714a0c05ed1"}, "party_name": "ZAK ENTERPRISES", "direct_account_name": null, "cash_bank_account_name": "Cash in Hand"}
 d0a477ca-b06b-4155-909f-c9eeddecb898	deleted	payment	crv	CRV-34	2026-10-12	\N	FARAZ SPORTS DYEING	1200000	3b485a4c-5dcb-4a33-885c-7a9f62427783	Admin	2026-10-14 06:09:35.968411+00	{"payment": {"id": "10ff369c-eea4-42d3-b904-33c8e60c9ddd", "notes": "2 chq", "amount": 1200000, "method": "cash", "status": "voided", "party_id": "15f0a516-f34b-41ce-80df-e21cc0554b9a", "cheque_no": null, "direction": "receipt", "voided_at": "2026-10-14T06:06:12.17239+00:00", "voided_by": "3b485a4c-5dcb-4a33-885c-7a9f62427783", "created_at": "2026-10-12T18:49:47.598041+00:00", "created_by": "e7399901-e484-46a3-95dc-60bc308f5426", "voucher_no": "CRV-34", "void_reason": "double", "payment_date": "2026-10-12", "direct_account_id": null, "linked_invoice_id": null, "cash_bank_account_id": "46ff676e-30cb-49e1-901b-f714a0c05ed1"}, "party_name": "FARAZ SPORTS DYEING", "direct_account_name": null, "cash_bank_account_name": "Cash in Hand"}
+d9477820-5ea6-45f6-bc11-5fc2dd2a5db6	deleted	invoice	purchase	PI-05	2026-10-01	skf_polybags	ZAK ENTERPRISES	2380000.70	3b485a4c-5dcb-4a33-885c-7a9f62427783	Admin	2026-10-30 18:40:39.747056+00	{"items": [{"id": "0dbcad65-e1e5-4e6f-96db-ffde0e85016c", "gsm": null, "rate": 680, "unit": "KG", "color": null, "amount": 378250.00, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 556.25, "narration": "24-08-26", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "dac26ab7-d037-40ad-ab6d-bd0ae95d5786", "gsm": null, "rate": 640, "unit": "KG", "color": null, "amount": 16000, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 25, "narration": "22 09 26", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "b513d502-6df2-4927-80c5-027f03922785", "gsm": null, "rate": 640, "unit": "KG", "color": null, "amount": 129888.00, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 202.95, "narration": "26-09-26", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "e323cc80-ebd1-425c-9828-a17b52552121", "gsm": null, "rate": 665, "unit": "KG", "color": null, "amount": 21911.75, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 32.95, "narration": "18 Aug", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "e42a11b2-23ee-43f3-a3f9-1b311c6607c0", "gsm": null, "rate": 640, "unit": "KG", "color": null, "amount": 66944.0, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 104.6, "narration": "23 Sept", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "e620033f-9be8-423c-bf65-e259e1795f84", "gsm": null, "rate": 110, "unit": "KG", "color": null, "amount": 29370, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 267, "narration": null, "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "a94b8782-dbdc-4b59-85cb-e9b1c44fbb91", "gsm": null, "rate": 730, "unit": "KG", "color": null, "amount": 194910, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 267, "narration": "Waste", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "e4b9fd66-a1cb-40a4-bafe-b5fed4ca8eab", "gsm": null, "rate": 625, "unit": "KG", "color": null, "amount": 148500.0, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 237.6, "narration": "Waste", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "d87fab24-42c1-48cd-b5e6-0a778ef2a251", "gsm": null, "rate": 615, "unit": "KG", "color": null, "amount": 164051.25, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 266.75, "narration": "21 Aug", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "1f7e3cf5-b701-4fba-8c5c-408a36228388", "gsm": null, "rate": 615, "unit": "KG", "color": null, "amount": 328717.5, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 534.5, "narration": "15 Sept", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "9983d9c0-c1b9-410c-8fb7-25360043d4dc", "gsm": null, "rate": 635, "unit": "KG", "color": null, "amount": 396430.5, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 624.3, "narration": "25 Sept", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "9d51a08f-b4fc-49d1-8420-69662478a7cd", "gsm": null, "rate": 880, "unit": "KG", "color": null, "amount": 79376.0, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 90.2, "narration": "20 Aug", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "a8e9913c-749d-4420-b212-20cddb979528", "gsm": null, "rate": 130, "unit": "KG", "color": null, "amount": 8840, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 68, "narration": "22 Aug", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "ca692341-dcb4-4855-8638-3d1d2ab1aee9", "gsm": null, "rate": 17647, "unit": "PCS", "color": null, "amount": 17647, "item_id": "a4d88bd2-4cc5-46b6-8a5a-7320f8676507", "quantity": 1, "narration": "Awami", "description": "SALE TAX INVOICE", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "30ddfd8d-24c0-49b7-b8da-71a27d5928ab", "gsm": null, "rate": 665, "unit": "KG", "color": null, "amount": 21399.70, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 32.18, "narration": "15 Aug", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "cb46afed-085f-475c-bdb4-400cb341d129", "gsm": null, "rate": 880, "unit": "KG", "color": null, "amount": 25168.0, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 28.6, "narration": "15 Aug", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "20c508d7-24bd-487c-88fc-b4481a00f54a", "gsm": null, "rate": 1581, "unit": "PCS", "color": null, "amount": 1581, "item_id": "4237b09a-1618-403a-9c21-18976904a79d", "quantity": 1, "narration": null, "description": "Block", "reserved_for_party_id": null, "fulfilled_from_item_id": null}, {"id": "112a7d55-4c67-4990-9b2b-ec6c045bcd0b", "gsm": null, "rate": 680, "unit": "KG", "color": null, "amount": 351016.0, "item_id": "7f06a687-636e-4f8a-b4be-8fb4d4090352", "quantity": 516.2, "narration": "30 July Missing Bill", "description": "LLD Polybag", "reserved_for_party_id": null, "fulfilled_from_item_id": null}], "invoice": {"id": "352f89f8-dcd5-4ffa-a651-3aff424ea412", "status": "voided", "category": "polybags", "party_id": "3df7c6fc-b219-4436-99c4-4caba186a5ae", "brand_key": "skf_polybags", "narration": null, "voided_at": "2026-10-30T18:40:35.859405+00:00", "voided_by": "3b485a4c-5dcb-4a33-885c-7a9f62427783", "created_at": "2026-10-30T18:15:05.180335+00:00", "created_by": "3b485a4c-5dcb-4a33-885c-7a9f62427783", "invoice_no": "PI-05", "tax_amount": 0, "void_reason": "double", "invoice_date": "2026-10-01", "invoice_type": "purchase", "total_amount": 2380000.70, "customer_po_no": null, "discount_amount": 0, "linked_order_id": null, "loading_charges": 0, "transport_charges": 0, "supplier_invoice_no": null}}
 \.
 
 
@@ -2155,7 +2157,7 @@ COPY public.expenses (id, expense_date, expense_account_id, cash_bank_account_id
 --
 
 COPY public.heartbeat (id, pinged_at) FROM stdin;
-1	2026-10-13 05:59:50+00
+1	2026-11-13 05:40:06+00
 \.
 
 
@@ -2164,7 +2166,6 @@ COPY public.heartbeat (id, pinged_at) FROM stdin;
 --
 
 COPY public.invoice_items (id, invoice_id, quantity, unit, rate, description, item_id, narration, reserved_for_party_id, fulfilled_from_item_id, color, gsm) FROM stdin;
-bc70f6c0-5a98-4b94-a316-7973770aa3a5	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	500	KG	1000	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	Check	\N	\N	\N	\N
 8854508f-5831-42a2-8ce5-4b9732b3f0b8	68987bdb-747f-4263-b7cb-f496f4582025	250	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Black	\N
 52bfd468-1a3f-43dd-b002-7abe43447d21	68987bdb-747f-4263-b7cb-f496f4582025	125	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Navy 193932 TPG	\N
 312db585-eef0-4e28-821a-12219c95ae6d	68987bdb-747f-4263-b7cb-f496f4582025	125	KG	1550	Scuba Fabric	89acf469-10bd-48f9-bcd1-24497e4cf3b3	\N	\N	\N	Frost Grey TPG 170000	\N
@@ -2272,6 +2273,34 @@ d51c70f9-2f38-41d9-bcc1-ed93de378eea	19aa0891-41b1-486f-a91a-9905a9fe4377	130	PC
 57f9c667-3278-4399-8a09-be2e30899bb1	19aa0891-41b1-486f-a91a-9905a9fe4377	190	PCS	42	Eva bag	9183c9b2-6fd5-4057-a8aa-b5e264312127	Polybag 10*12. Double  print (udia)	\N	\N	\N	\N
 f82b7beb-92f8-46d6-a5da-f9ddea718dc9	19aa0891-41b1-486f-a91a-9905a9fe4377	315	PCS	47	Eva bag	9183c9b2-6fd5-4057-a8aa-b5e264312127	Polybag 13*15. (Udia)	\N	\N	\N	\N
 d42beea0-4d71-407c-ac1b-bfff08a50a53	19aa0891-41b1-486f-a91a-9905a9fe4377	2	KG	750	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	\N	\N	\N	\N	\N
+bd0c66e2-0c22-4e8a-b7f9-817dbcb44b42	f5b7e06f-e420-485c-9e70-d931f4ad369b	7200	PCS	15	PP	bc16062b-8939-428a-8872-7a6d4313be26	Esercito polybag. 12*16+2	\N	\N	\N	\N
+ca2a0088-9d9b-4581-b4a3-7613b34f6a0d	f5b7e06f-e420-485c-9e70-d931f4ad369b	6700	PCS	16	PP	bc16062b-8939-428a-8872-7a6d4313be26	Esercito polybag. 13*17+2. 	\N	\N	\N	\N
+c54ced9a-c6ba-4988-8648-16713cce233a	5317b669-4397-49db-9601-fc8659b39ded	30	KG	860	PP	bc16062b-8939-428a-8872-7a6d4313be26	10×12	\N	\N	\N	\N
+1aef2566-e642-482d-89ac-6d423c7cd379	5317b669-4397-49db-9601-fc8659b39ded	60	KG	860	PP	bc16062b-8939-428a-8872-7a6d4313be26	12×14	\N	\N	\N	\N
+c6bfd58e-83bf-47a3-9037-1deed4f65e0d	5317b669-4397-49db-9601-fc8659b39ded	60	KG	860	PP	bc16062b-8939-428a-8872-7a6d4313be26	14×18	\N	\N	\N	\N
+a1d673db-4794-4323-b128-995f271d68b8	1719e371-7967-4e87-8f44-e0a676f45f38	532.5	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	36×60 06-10-26	\N	\N	\N	\N
+369e4a15-93c8-4e10-a8c7-653adc1d6643	1719e371-7967-4e87-8f44-e0a676f45f38	528.6	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	36×60 13-10-26	\N	\N	\N	\N
+e48f9d2b-0be5-4749-8e0b-f2c9cb6e4a17	1719e371-7967-4e87-8f44-e0a676f45f38	564.6	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	36×60 19-10-26	\N	\N	\N	\N
+df588061-392d-447a-8856-5daca18dc721	1719e371-7967-4e87-8f44-e0a676f45f38	528.95	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	36×60 22-10-26	\N	\N	\N	\N
+f956b4e9-193a-4f1d-a72c-b94a467636e2	1719e371-7967-4e87-8f44-e0a676f45f38	52.7	KG	780	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	8×10 22-10-26	\N	\N	\N	\N
+f2724cfc-8645-43ad-9a7c-4a399dcb05d9	48dcc972-f4be-432f-8584-60cbe7fb6637	75	KG	650	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	Print Maal Partial Bill	\N	\N	\N	\N
+b9cb2e46-2bb1-4df9-b287-011ce5bac3d2	f5816ef7-4104-4882-b6a2-1910a197cd63	75	KG	650	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	Print Maal Partial Bill	\N	\N	\N	\N
+3f4bc56c-b41e-4471-9c30-caae6c4be0cc	700b5a80-bc0e-4798-8216-c35b7672f7a2	33.2	KG	2000	Micro Fleece	5d2f70df-e0dc-4986-bcff-66fd4a5d4a90	\N	\N	\N	Black	\N
+44b88d48-7b01-443f-8ad3-a06db041026c	700b5a80-bc0e-4798-8216-c35b7672f7a2	20.3	KG	2500	Interlock Lycra	f0b49011-f712-47a3-80b9-b75a877ca300	\N	\N	\N	Black 	\N
+ae7b7cc6-956d-445b-bc9f-6d6f8e954b4a	700b5a80-bc0e-4798-8216-c35b7672f7a2	18.4	KG	2500	Interlock Lycra	f0b49011-f712-47a3-80b9-b75a877ca300	\N	\N	\N	Navy	\N
+d74f33ef-ebae-46e5-9583-607c6806e9a5	700b5a80-bc0e-4798-8216-c35b7672f7a2	18.3	KG	2500	Interlock Lycra	f0b49011-f712-47a3-80b9-b75a877ca300	\N	\N	\N	Green	\N
+05b02ef1-67e0-4b11-bdf7-5a9e0b568019	ea59d196-d4d7-465a-ac20-2598ecbf8aed	1	PCS	17647	SALE TAX INVOICE	a4d88bd2-4cc5-46b6-8a5a-7320f8676507	\N	\N	\N	\N	\N
+30de4dad-6182-40d4-9582-e5092b73421a	ea59d196-d4d7-465a-ac20-2598ecbf8aed	1	PCS	1581	Block	4237b09a-1618-403a-9c21-18976904a79d	\N	\N	\N	\N	\N
+0e779231-c292-42f3-a6ce-24590f9e263a	ea59d196-d4d7-465a-ac20-2598ecbf8aed	125	PCS	110	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	making	\N	\N	\N	\N
+45464381-848f-4e2d-90b2-bfc34fbdac81	4fbf8c0d-6e27-4907-8467-22ab4e3cb75d	303.5	KG	680	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	12bags. Polybag 31*52	\N	\N	\N	\N
+98a637db-03a9-4d3e-9b43-10cb068e6e1a	4fbf8c0d-6e27-4907-8467-22ab4e3cb75d	192.35	KG	680	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	8bags polybag. 36*56	\N	\N	\N	\N
+8aaab309-482b-4558-901a-d2bacec2cf97	3e51ce13-561a-4576-a393-279132bead03	178.65	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	28-Oct	\N	\N	\N	\N
+17abb238-23d5-4d30-a3dd-4320bf75250e	3e51ce13-561a-4576-a393-279132bead03	183.05	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	29-Oct	\N	\N	\N	\N
+1798e2c0-0a44-41f6-8f35-dd924715b7e0	3e51ce13-561a-4576-a393-279132bead03	197.7	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	31-Oct	\N	\N	\N	\N
+dcd7d23a-51ec-41a2-af0a-f8ad4cd87a7c	3e51ce13-561a-4576-a393-279132bead03	241.35	KG	600	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	3-Nov	\N	\N	\N	\N
+be512e8b-9b9a-4c75-84f1-31cd289d7735	a96bf594-c669-4c72-8229-2cc01fe93c6f	3630.659	KG	660	LLD Polybag	7f06a687-636e-4f8a-b4be-8fb4d4090352	\N	\N	\N	\N	\N
+0509ec3e-3000-404f-9802-5647047ac7c4	4b5b3e99-db1d-4431-891e-0fe2da629613	18.5	KG	2350	Interlock Lycra	f0b49011-f712-47a3-80b9-b75a877ca300	\N	\N	\N	Off White 	\N
+1db49b11-29c1-458e-bd9e-9e6f640437f0	4b5b3e99-db1d-4431-891e-0fe2da629613	25.9	KG	1850	Micro Fleece	5d2f70df-e0dc-4986-bcff-66fd4a5d4a90	\N	\N	\N	Green	\N
 \.
 
 
@@ -2289,7 +2318,7 @@ e8d8525c-05dc-4be9-b34f-4215739127d1	SI-11	sale	skf_polybags	polybags	a24d7d03-9
 2af7d047-2bf3-4ca9-a2cc-54de244fb80f	SI-12	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-09-19	49200	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-21 05:46:40.40321+00	\N	\N	0	0	0	0	\N	\N
 0f3c00aa-1ed9-4cf7-b922-f4742b83352b	SI-13	sale	skf_polybags	polybags	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	2026-09-21	359845.0	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-21 07:29:09.27207+00	\N	\N	0	0	0	0	\N	\N
 68987bdb-747f-4263-b7cb-f496f4582025	SO-01	sale_order	skf_polytex	fabric	4b3d374d-0009-4eb5-bb4d-b91eedba0505	2026-08-04	1162500	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-18 21:57:52.833678+00	\N	\N	0	0	0	0	\N	\N
-aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	PI-03	purchase	skf_polybags	polybags	3df7c6fc-b219-4436-99c4-4caba186a5ae	2026-08-17	500000	voided	2026-08-21 17:16:12.283392+00	3b485a4c-5dcb-4a33-885c-7a9f62427783	Checking	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-17 22:22:14.92634+00	468	\N	0	0	0	0	\N	\N
+ea59d196-d4d7-465a-ac20-2598ecbf8aed	PI-06	purchase	skf_polybags	polybags	3df7c6fc-b219-4436-99c4-4caba186a5ae	2026-10-30	32978	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-30 19:16:45.054789+00	\N	\N	0	0	0	0	\N	\N
 ce232888-9819-4d54-9640-cce5c9095487	SI-14	sale	skf_polybags	polybags	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	2026-09-15	363460.00	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-09-22 12:19:35.670979+00	\N	\N	0	0	0	0	\N	\N
 35a918b0-1af8-4197-bfb2-15292f1e3825	SO-02	sale_order	skf_polytex	fabric	1a2ad29f-f058-453a-bf99-e9e1d1dbdc7f	2026-08-23	550000	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-23 19:13:06.799928+00	\N	\N	0	0	0	0	\N	\N
 beefd98a-d86c-49af-b224-a977eb0dbcc3	SO-03	sale_order	skf_polytex	fabric	3a78e9b2-8973-4c4f-822f-91cbf7b6c253	2026-08-23	1302500	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-23 19:31:45.158191+00	\N	\N	0	0	0	0	\N	\N
@@ -2307,6 +2336,16 @@ f7dd082e-f271-4b1e-a07a-e59e601c721f	SI-20	sale	skf_polytex	fabric	8275f744-f561
 dc0487f4-a0f1-4ed3-9409-638ce3dc660d	SI-21	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-10-08	76500	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-11 22:39:31.870831+00	\N	\N	0	0	0	0	\N	\N
 89e4be8e-07a0-4c6f-b6fb-63c3c08111d9	SI-22	sale	skf_polybags	polybags	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	2026-10-12	332195.0	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-12 19:00:38.935085+00	\N	\N	0	0	0	0	\N	\N
 19aa0891-41b1-486f-a91a-9905a9fe4377	SI-23	sale	skf_polybags	polybags	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	2026-10-14	69735.0	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-14 11:42:47.976772+00	\N	\N	0	0	0	0	\N	\N
+f5b7e06f-e420-485c-9e70-d931f4ad369b	SI-24	sale	skf_polybags	polybags	ff67951f-a22a-4487-ad34-fae532eb358d	2026-10-16	215200	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-16 21:26:13.157481+00	\N	\N	0	0	0	0	\N	\N
+5317b669-4397-49db-9601-fc8659b39ded	SI-25	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-10-19	129000	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-22 06:32:27.677955+00	\N	\N	0	0	0	0	\N	\N
+1719e371-7967-4e87-8f44-e0a676f45f38	SI-26	sale	skf_polybags	polybags	15f0a516-f34b-41ce-80df-e21cc0554b9a	2026-10-19	1333896.00	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-23 08:12:19.283916+00	\N	\N	0	0	0	0	\N	\N
+48dcc972-f4be-432f-8584-60cbe7fb6637	SI-27	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-10-28	48750	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-28 06:46:44.280907+00	\N	\N	0	0	0	0	\N	\N
+f5816ef7-4104-4882-b6a2-1910a197cd63	SI-28	sale	skf_polybags	polybags	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	2026-10-28	48750	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-28 06:47:17.352995+00	\N	\N	0	0	0	0	\N	\N
+700b5a80-bc0e-4798-8216-c35b7672f7a2	SI-29	sale	skf_polytex	fabric	8275f744-f561-4852-b850-203de549895c	2026-10-30	208900.0	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-30 11:46:39.154345+00	\N	\N	0	0	0	0	\N	\N
+4fbf8c0d-6e27-4907-8467-22ab4e3cb75d	SI-30	sale	skf_polybags	polybags	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	2026-11-01	337178.00	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-01 16:58:09.996181+00	\N	\N	0	0	0	0	\N	\N
+3e51ce13-561a-4576-a393-279132bead03	SI-31	sale	skf_polybags	polybags	15f0a516-f34b-41ce-80df-e21cc0554b9a	2026-10-31	480450.00	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-11-04 04:55:21.477407+00	\N	\N	0	0	0	0	\N	\N
+a96bf594-c669-4c72-8229-2cc01fe93c6f	SI-32	sale	skf_polybags	polybags	635db2c3-1801-44a6-822a-cf1dbc116223	2026-10-31	2396234.940	posted	\N	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-08 21:43:15.695751+00	\N	\N	0	0	0	0	\N	\N
+4b5b3e99-db1d-4431-891e-0fe2da629613	SI-33	sale	skf_polytex	fabric	8275f744-f561-4852-b850-203de549895c	2026-11-12	91390.0	posted	\N	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-11-12 11:04:19.584974+00	\N	\N	0	0	0	0	\N	\N
 \.
 
 
@@ -2318,12 +2357,14 @@ COPY public.items (id, name, category, default_unit, last_purchase_rate, last_sa
 681b4a6b-f63f-4eb6-8557-1a8b23878829	EVA Bag	polybags	PCS	\N	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 ca075ed1-3d8d-4a42-b685-2dcfd1533751	HD Polybag	polybags	PCS	\N	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 edcd1631-dd8f-4a56-8356-3487a4293950	BOPP	polybags	PCS	\N	\N	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
+a4d88bd2-4cc5-46b6-8a5a-7320f8676507	SALE TAX INVOICE	polybags	PCS	17647	\N	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-30 18:06:02.115541+00	\N	\N	\N	product
 964f8d13-6368-4a80-9baf-5a113707aa96	Lycra Jersey	fabric	KG	\N	2500	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-06 08:18:08.150924+00	\N	in_house	\N	product
-5d2f70df-e0dc-4986-bcff-66fd4a5d4a90	Micro Fleece	fabric	KG	\N	2000	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-06 08:21:12.118716+00	\N	in_house	\N	product
-bc16062b-8939-428a-8872-7a6d4313be26	PP	polybags	PCS	\N	850	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
+4237b09a-1618-403a-9c21-18976904a79d	Block	polybags	PCS	1581	\N	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-11 18:47:32.639362+00	\N	\N	\N	product
+7f06a687-636e-4f8a-b4be-8fb4d4090352	LLD Polybag	polybags	PCS	110	660	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 9183c9b2-6fd5-4057-a8aa-b5e264312127	Eva bag	polybags	PCS	\N	47	t	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:57:05.6573+00	\N	\N	\N	product
-7f06a687-636e-4f8a-b4be-8fb4d4090352	LLD Polybag	polybags	PCS	680	750	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
-4237b09a-1618-403a-9c21-18976904a79d	Block	polybags	PCS	4690	\N	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-08-11 18:47:32.639362+00	\N	\N	\N	product
+f0b49011-f712-47a3-80b9-b75a877ca300	Interlock Lycra	fabric	KG	\N	2350	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-30 11:45:36.770024+00	\N	in_house	\N	product
+5d2f70df-e0dc-4986-bcff-66fd4a5d4a90	Micro Fleece	fabric	KG	\N	1850	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-06 08:21:12.118716+00	\N	in_house	\N	product
+bc16062b-8939-428a-8872-7a6d4313be26	PP	polybags	PCS	\N	860	t	\N	2026-08-06 21:18:20.995209+00	\N	\N	\N	product
 495d1db9-95b6-4be4-9268-226a56554d7a	Flyers	polybags	PCS	\N	65	t	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:43:52.717355+00	\N	\N	\N	product
 f2fd52a8-be5e-469d-970a-4e53f9925494	Screens	polybags	PCS	\N	1000	t	e7399901-e484-46a3-95dc-60bc308f5426	2026-08-31 20:46:21.56345+00	\N	\N	\N	product
 8a11c81c-6a26-4195-bad5-80128627036c	Tape	polybags	KG	130	\N	t	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-09-26 17:58:01.0511+00	\N	\N	\N	product
@@ -2392,7 +2433,6 @@ c5822c80-0707-4995-8897-03b944f22aab	2026-08-15	546958e7-c3e6-415a-ba96-04534550
 6eaf8cc5-5f0e-49a2-982d-063d048fd2bf	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	4118c128-41c0-40fa-9c46-35fbc42d230f	0	514968	opening_balance	4118c128-41c0-40fa-9c46-35fbc42d230f	2026-08-17 21:44:51.107649+00	Opening balance	\N
 c781a7e3-a375-47f2-b60d-b5e437823cb0	2026-08-15	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	2762574	0	opening_balance	635db2c3-1801-44a6-822a-cf1dbc116223	2026-08-17 21:48:22.363723+00	Opening balance	\N
 677be3b0-7b9e-496d-813a-d463a6582e90	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	635db2c3-1801-44a6-822a-cf1dbc116223	0	2762574	opening_balance	635db2c3-1801-44a6-822a-cf1dbc116223	2026-08-17 21:48:22.363723+00	Opening balance	\N
-6031b0ab-232f-4ad3-a629-4e83133e7511	2026-08-17	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	500000	invoice	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-17 22:22:14.92634+00	Check	PI-03
 9ccaf33b-8da3-43b8-8e22-0f4db8c59759	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	4b3d374d-0009-4eb5-bb4d-b91eedba0505	581250	0	opening_balance	4b3d374d-0009-4eb5-bb4d-b91eedba0505	2026-08-17 21:36:50.502286+00	Advance — Opening balance	\N
 e486c136-6a4e-40d2-aad5-21dde1f76ea0	2026-08-15	6005ba1e-cd53-4805-9502-6a48a899f6eb	1a2ad29f-f058-453a-bf99-e9e1d1dbdc7f	275000	0	opening_balance	1a2ad29f-f058-453a-bf99-e9e1d1dbdc7f	2026-08-17 21:36:50.502286+00	Advance — Opening balance	\N
 ce599981-547d-481a-ae65-27387e486361	2026-08-19	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	4000	0	payment	0606e531-b3a8-42ea-9dd8-b1095f273dc3	2026-08-19 18:20:49.793524+00	Evabag advance 	CRV-02
@@ -2415,7 +2455,6 @@ b4dcf4ab-e130-4603-a1fd-f979a91a4b5b	2026-08-21	e6a42291-8735-4930-ac69-96692076
 3c53e239-b360-487c-b0ee-a27b4694b512	2026-08-21	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	1280	payment	4d7690cc-cfeb-489d-a897-27e8e8bd520b	2026-08-21 12:45:27.533876+00	Leopard	CPV-04
 9eef3e8f-c462-466c-bdee-d29ef11d1ae7	2026-08-21	46ff676e-30cb-49e1-901b-f714a0c05ed1	635db2c3-1801-44a6-822a-cf1dbc116223	425000	0	payment	88ae0e3d-3e33-4180-ad67-8f2c81672c9d	2026-08-21 13:47:35.741303+00	2 chqs from azlan	CRV-09
 61f9eae5-8ccf-4c7b-bbfa-15114bc9365f	2026-08-21	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	0	425000	payment	88ae0e3d-3e33-4180-ad67-8f2c81672c9d	2026-08-21 13:47:35.741303+00	2 chqs from azlan	CRV-09
-c7f1e68d-99ff-4e1f-8f20-fd808b4d9ee2	2026-08-21	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	500000	0	void	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-21 17:16:12.283392+00	Void — Checking	PI-03
 ae9765d7-f636-4c12-b349-3da6ca72b2db	2026-08-22	46ff676e-30cb-49e1-901b-f714a0c05ed1	0fea589d-e163-49b4-9fa6-cdc95867c38b	16000	0	payment	fc257527-03a9-42ff-a045-88188b4c703f	2026-08-22 15:13:35.4218+00	Cash	CRV-10
 af2cb769-459d-4be3-842c-dd947874b69b	2026-08-22	425dc932-ca69-4c03-97fa-b08750e4851a	0fea589d-e163-49b4-9fa6-cdc95867c38b	0	16000	payment	fc257527-03a9-42ff-a045-88188b4c703f	2026-08-22 15:13:35.4218+00	Cash	CRV-10
 095845dc-cc76-4ce0-afd4-e04bebfa719c	2026-08-22	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	76400	0	payment	736fbd8b-5893-470c-b0ab-b68a78f2c4ab	2026-08-22 15:15:18.865864+00	Eva bag custmr	CRV-11
@@ -2470,8 +2509,6 @@ cb219589-a26b-4bf7-af17-671e31a76a32	2026-09-02	1f8470e4-7bd0-4a80-bb9a-4bced4d9
 42229a05-6c6d-4fe9-a931-2b00600531fb	2026-08-31	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	bb6ec8ae-b1af-4181-90b3-f13405f372a1	0	108500	invoice	42d4600a-20e0-4681-907a-42e33861d4bc	2026-08-31 20:49:09.925778+00	\N	SI-03
 babceda2-0931-4c1a-9d0c-8fee6fbbbc85	2026-08-31	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	aed6df78-869e-4c5d-9444-431d781283cc	0	43000	invoice	eb802a96-5a6e-4945-9a9e-b4e136711362	2026-08-31 20:58:35.690412+00	\N	SI-04
 0bf8c141-150a-453c-ac34-410c088d6dc7	2026-09-02	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	15f0a516-f34b-41ce-80df-e21cc0554b9a	0	250838.00	invoice	2d3bc56f-bc06-485c-bb04-5e7c3e84d9b6	2026-09-02 12:51:52.364096+00	04-08-26; 17-08-26; 18-08-26	SI-05
-7c729419-4a3a-4cfc-8490-a507ce1ce98e	2026-08-21	97443ecd-e235-4fcf-b60c-7de5057553a2	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	500000	void	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-21 17:16:12.283392+00	Void — Checking	PI-03
-b2276662-8f1f-4ea4-8d57-27a4aca24491	2026-08-17	97443ecd-e235-4fcf-b60c-7de5057553a2	3df7c6fc-b219-4436-99c4-4caba186a5ae	500000	0	invoice	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-17 22:22:14.92634+00	Check	PI-03
 707a4470-347e-4975-b6c7-552ae4a686c5	2026-09-06	46ff676e-30cb-49e1-901b-f714a0c05ed1	635db2c3-1801-44a6-822a-cf1dbc116223	450000	0	payment	422530be-af65-4382-b239-c71afc08903b	2026-09-06 12:12:40.72685+00	\N	CRV-18
 238408d0-c923-4b06-a67b-adc88df7f531	2026-09-06	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	0	450000	payment	422530be-af65-4382-b239-c71afc08903b	2026-09-06 12:12:40.72685+00	\N	CRV-18
 ce97293e-64b3-4bd9-a438-ce2b6f13d646	2026-09-06	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	450000	0	payment	cf658a14-421d-46d3-b34f-40efb8371c54	2026-09-06 12:13:06.058718+00	\N	CPV-18
@@ -2610,6 +2647,56 @@ ab48ff5c-681b-485b-86e3-0a6c856f662f	2026-10-13	46ff676e-30cb-49e1-901b-f714a0c0
 17b7fa73-01f6-494b-aaec-ee198f0505ee	2026-10-12	21c01cc6-ee96-4dcd-83c2-64871c947d95	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	0	300000	payment	9264bdf8-23a7-4aa0-b4ce-5aff255d65e5	2026-10-12 19:47:16.798833+00	Invoice chq	CRV-35
 db1e863d-19b5-445f-95b4-fa3456abb6f7	2026-10-14	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	69735.0	0	invoice	19aa0891-41b1-486f-a91a-9905a9fe4377	2026-10-14 11:42:47.976772+00	Polybag 10*12. Double  print (udia); Polybag 13*15. (Udia); Polybag 36*48; Polybag cuaotti	SI-23
 e0d46796-b827-4949-9720-3559b97422c5	2026-10-14	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	69735.0	invoice	19aa0891-41b1-486f-a91a-9905a9fe4377	2026-10-14 11:42:47.976772+00	Polybag 10*12. Double  print (udia); Polybag 13*15. (Udia); Polybag 36*48; Polybag cuaotti	SI-23
+34b49569-9a8e-4bc0-b2c1-91688ad868c4	2026-10-16	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	350000	0	payment	91dac65b-1389-4dfb-b7c0-c23d95e910dd	2026-10-16 20:09:49.32456+00	Ghr pa lga 	CPV-52
+1be51d61-56d5-4fcc-8f98-3d008a20367c	2026-10-16	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	350000	payment	91dac65b-1389-4dfb-b7c0-c23d95e910dd	2026-10-16 20:09:49.32456+00	Ghr pa lga 	CPV-52
+6bdace45-9762-4d80-9980-e35974d40dcf	2026-10-16	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	300000	0	payment	63537d92-7d8e-49e6-a256-264848d14416	2026-10-16 20:10:26.204061+00	Mama ko dia shadi ka lia 	CPV-53
+30438e41-767b-4a88-a597-cc4552064e66	2026-10-16	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	300000	payment	63537d92-7d8e-49e6-a256-264848d14416	2026-10-16 20:10:26.204061+00	Mama ko dia shadi ka lia 	CPV-53
+c043faa8-c770-4669-9935-0b22a4d655a3	2026-10-16	460aa95d-1519-4435-b641-3e76f6e0016e	ff67951f-a22a-4487-ad34-fae532eb358d	215200	0	invoice	f5b7e06f-e420-485c-9e70-d931f4ad369b	2026-10-16 21:26:13.157481+00	Esercito polybag. 12*16+2; Esercito polybag. 13*17+2. 	SI-24
+17fb3579-35be-4156-bbab-55932df33e79	2026-10-16	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	ff67951f-a22a-4487-ad34-fae532eb358d	0	215200	invoice	f5b7e06f-e420-485c-9e70-d931f4ad369b	2026-10-16 21:26:13.157481+00	Esercito polybag. 12*16+2; Esercito polybag. 13*17+2. 	SI-24
+59975216-c4ba-4811-bcb6-902a7d56efc0	2026-10-19	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	129000	0	invoice	5317b669-4397-49db-9601-fc8659b39ded	2026-10-22 06:32:27.677955+00	10×12; 12×14; 14×18	SI-25
+c255ec8c-ce35-45db-99fe-44517d6d03dc	2026-10-19	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	129000	invoice	5317b669-4397-49db-9601-fc8659b39ded	2026-10-22 06:32:27.677955+00	10×12; 12×14; 14×18	SI-25
+86d572d6-5c1a-43c2-87f5-cea93c292625	2026-10-19	f9e568c4-fbb6-4500-a222-1a7a53171d4c	15f0a516-f34b-41ce-80df-e21cc0554b9a	1333896.00	0	invoice	1719e371-7967-4e87-8f44-e0a676f45f38	2026-10-23 08:12:19.283916+00	36×60 06-10-26; 36×60 13-10-26; 36×60 19-10-26; 36×60 22-10-26; 8×10 22-10-26	SI-26
+3b7dd17a-5905-4481-8e27-9442bf6714cb	2026-10-19	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	15f0a516-f34b-41ce-80df-e21cc0554b9a	0	1333896.00	invoice	1719e371-7967-4e87-8f44-e0a676f45f38	2026-10-23 08:12:19.283916+00	36×60 06-10-26; 36×60 13-10-26; 36×60 19-10-26; 36×60 22-10-26; 8×10 22-10-26	SI-26
+d095b4e0-9849-4e90-af90-340da8f1599a	2026-10-28	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	48750	0	invoice	48dcc972-f4be-432f-8584-60cbe7fb6637	2026-10-28 06:46:44.280907+00	Print Maal Partial Bill	SI-27
+81da4c49-29ae-41f2-ae65-7a8cb553471b	2026-10-28	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	48750	invoice	48dcc972-f4be-432f-8584-60cbe7fb6637	2026-10-28 06:46:44.280907+00	Print Maal Partial Bill	SI-27
+9b223d33-4af3-47b8-b822-92491e50216c	2026-10-28	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	48750	0	invoice	f5816ef7-4104-4882-b6a2-1910a197cd63	2026-10-28 06:47:17.352995+00	Print Maal Partial Bill	SI-28
+d69633ef-5691-4a73-940d-4cc48b1e7999	2026-10-28	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	48750	invoice	f5816ef7-4104-4882-b6a2-1910a197cd63	2026-10-28 06:47:17.352995+00	Print Maal Partial Bill	SI-28
+b02e2d33-1010-46d5-877e-0031dd01b88b	2026-10-29	46ff676e-30cb-49e1-901b-f714a0c05ed1	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	100000	0	payment	b86e8225-d894-4486-8c13-b921ebe62a72	2026-10-29 20:55:20.469329+00	Chq Rec Shahid Javed Sports 	CRV-36
+1fd51e65-5d20-4c53-8822-e99561cfd19b	2026-10-29	f381c993-3a45-4110-95c4-79702f855f1d	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	0	100000	payment	b86e8225-d894-4486-8c13-b921ebe62a72	2026-10-29 20:55:20.469329+00	Chq Rec Shahid Javed Sports 	CRV-36
+d6640840-091d-4c87-96b4-0414ab3d3819	2026-10-30	690fa205-be66-4b6c-8ea4-3372e54692bc	8275f744-f561-4852-b850-203de549895c	208900.0	0	invoice	700b5a80-bc0e-4798-8216-c35b7672f7a2	2026-10-30 11:46:39.154345+00	\N	SI-29
+e4929870-b4a8-4ba3-919d-d0c61cfaec35	2026-10-30	b414cafa-9164-4c44-a264-fb62a28206c1	8275f744-f561-4852-b850-203de549895c	0	208900.0	invoice	700b5a80-bc0e-4798-8216-c35b7672f7a2	2026-10-30 11:46:39.154345+00	\N	SI-29
+f38b7dac-d702-40f6-b995-c03769654860	2026-10-30	97443ecd-e235-4fcf-b60c-7de5057553a2	3df7c6fc-b219-4436-99c4-4caba186a5ae	32978	0	invoice	ea59d196-d4d7-465a-ac20-2598ecbf8aed	2026-10-30 19:16:45.054789+00	making	PI-06
+fc4cf6b8-b1ce-4de9-b9f5-e18c370e7808	2026-10-30	4ebee95b-f8ec-43c6-be50-5879ecf064e3	3df7c6fc-b219-4436-99c4-4caba186a5ae	0	32978	invoice	ea59d196-d4d7-465a-ac20-2598ecbf8aed	2026-10-30 19:16:45.054789+00	making	PI-06
+3a2151b2-ccaf-487f-b175-55fd332393fb	2026-11-01	21c01cc6-ee96-4dcd-83c2-64871c947d95	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	337178.00	0	invoice	4fbf8c0d-6e27-4907-8467-22ab4e3cb75d	2026-11-01 16:58:09.996181+00	12bags. Polybag 31*52; 8bags polybag. 36*56	SI-30
+c39f195f-e934-4021-9a9d-4bef58ad1c75	2026-11-01	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	0	337178.00	invoice	4fbf8c0d-6e27-4907-8467-22ab4e3cb75d	2026-11-01 16:58:09.996181+00	12bags. Polybag 31*52; 8bags polybag. 36*56	SI-30
+735bf51c-7959-4ac0-bcca-2cea60e4f5f9	2026-10-31	f9e568c4-fbb6-4500-a222-1a7a53171d4c	15f0a516-f34b-41ce-80df-e21cc0554b9a	480450.00	0	invoice	3e51ce13-561a-4576-a393-279132bead03	2026-11-04 04:55:21.477407+00	28-Oct; 29-Oct; 3-Nov; 31-Oct	SI-31
+04598fab-49b4-435d-ab58-2277147efa13	2026-10-31	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	15f0a516-f34b-41ce-80df-e21cc0554b9a	0	480450.00	invoice	3e51ce13-561a-4576-a393-279132bead03	2026-11-04 04:55:21.477407+00	28-Oct; 29-Oct; 3-Nov; 31-Oct	SI-31
+32b2ad46-5599-4778-a4c6-1e44a1063676	2026-11-05	46ff676e-30cb-49e1-901b-f714a0c05ed1	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	170163	0	payment	03afb003-2e5a-4804-b8ee-c0a9bc26d245	2026-11-05 19:23:37.01685+00	Chq rec	CRV-37
+4228cef4-a715-4d0b-bf87-9358781c5fa2	2026-11-05	15d11f17-44ee-4a3b-9ace-7fd690a91023	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	0	170163	payment	03afb003-2e5a-4804-b8ee-c0a9bc26d245	2026-11-05 19:23:37.01685+00	Chq rec	CRV-37
+2c2e773c-131c-4a7e-8e88-8b409f4afd09	2026-11-05	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N	15000	0	payment	773178a6-9797-4a50-b3b8-fd845010994c	2026-11-05 19:24:23.496519+00	Petrol/bike sai krai /zamzam	CPV-54
+5075ed8b-2772-4fd7-b878-4bcdaa10ea56	2026-11-05	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	15000	payment	773178a6-9797-4a50-b3b8-fd845010994c	2026-11-05 19:24:23.496519+00	Petrol/bike sai krai /zamzam	CPV-54
+3dcedb60-f16b-4995-bf74-a343c5cb862f	2026-11-05	c1279a3f-8815-4485-b393-96778ef5a521	\N	5000	0	payment	db1c1be9-d9fe-40ce-b7a0-040b479ec5fb	2026-11-05 19:26:46.286593+00	Zyba	CPV-55
+5afc0d31-b20d-4262-973d-83f0dd63bc1c	2026-11-05	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	5000	payment	db1c1be9-d9fe-40ce-b7a0-040b479ec5fb	2026-11-05 19:26:46.286593+00	Zyba	CPV-55
+a24efac0-3710-45fb-9bb9-0ec976e6fb4e	2026-11-01	46ff676e-30cb-49e1-901b-f714a0c05ed1	cb109f23-d502-485d-992a-a41ed5da24b9	228754	0	payment	220429f4-70d2-40f1-9af3-82c30d7c18b9	2026-11-08 21:20:55.855625+00	Online payment 	CRV-38
+e7b96094-99e9-4dc2-91c0-4db53c33db50	2026-11-01	e0069fdb-38ed-4475-b4e7-a51af40322ee	cb109f23-d502-485d-992a-a41ed5da24b9	0	228754	payment	220429f4-70d2-40f1-9af3-82c30d7c18b9	2026-11-08 21:20:55.855625+00	Online payment 	CRV-38
+4e975ada-dc89-4fde-a726-bb9e8a0188e3	2026-10-31	46ff676e-30cb-49e1-901b-f714a0c05ed1	635db2c3-1801-44a6-822a-cf1dbc116223	1717094	0	payment	1bc659af-10f8-4d82-819f-4128c1b03157	2026-11-08 21:28:44.827323+00	\N	CRV-39
+578fd625-7c3a-42f1-9ae1-08486248ea25	2026-10-31	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	0	1717094	payment	1bc659af-10f8-4d82-819f-4128c1b03157	2026-11-08 21:28:44.827323+00	\N	CRV-39
+08dc8a56-647d-41ac-aad9-12ca980d7eb7	2026-11-08	46ff676e-30cb-49e1-901b-f714a0c05ed1	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	69735	0	payment	5c51c43c-bc41-40d2-ae82-3393ee1e7c31	2026-11-08 21:31:27.192631+00	\N	CRV-40
+e313f6c9-0b43-40ea-a50d-8c62179c9675	2026-11-08	c601aae0-067b-436a-9008-626e12fedc44	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	0	69735	payment	5c51c43c-bc41-40d2-ae82-3393ee1e7c31	2026-11-08 21:31:27.192631+00	\N	CRV-40
+994272b5-3c16-4565-863b-f3c54bf88b97	2026-11-08	46ff676e-30cb-49e1-901b-f714a0c05ed1	7c8ce4e5-42ba-4465-83ef-fa4a208fb5a8	200000	0	payment	d2ed7e89-2b72-4428-b2b3-f3bfff46bd60	2026-11-08 21:32:05.242698+00	\N	CRV-41
+b0c80da7-8039-4de1-9306-1cadabfe6f1e	2026-11-08	a5a3e8ce-c000-4e8a-8b0b-bec262abbe32	7c8ce4e5-42ba-4465-83ef-fa4a208fb5a8	0	200000	payment	d2ed7e89-2b72-4428-b2b3-f3bfff46bd60	2026-11-08 21:32:05.242698+00	\N	CRV-41
+8aa1a938-262d-4d37-bd0a-8e5973c14b5e	2026-11-08	46ff676e-30cb-49e1-901b-f714a0c05ed1	8275f744-f561-4852-b850-203de549895c	96400	0	payment	acaf6284-1218-4fb7-9085-936e3b615118	2026-11-08 21:32:31.258456+00	\N	CRV-42
+b73c1052-522e-46f9-94ff-7d945452a80a	2026-11-08	690fa205-be66-4b6c-8ea4-3372e54692bc	8275f744-f561-4852-b850-203de549895c	0	96400	payment	acaf6284-1218-4fb7-9085-936e3b615118	2026-11-08 21:32:31.258456+00	\N	CRV-42
+c66c278d-3a9b-4b24-9706-49220789c579	2026-10-31	ee3ed7a5-d2be-425c-9b0b-318c8cf646e6	635db2c3-1801-44a6-822a-cf1dbc116223	2396234.940	0	invoice	a96bf594-c669-4c72-8229-2cc01fe93c6f	2026-11-08 21:43:15.695751+00	\N	SI-32
+2d3b2674-e8cb-4e94-8040-cbcc19dedf1e	2026-10-31	1f8470e4-7bd0-4a80-bb9a-4bced4d98b8a	635db2c3-1801-44a6-822a-cf1dbc116223	0	2396234.940	invoice	a96bf594-c669-4c72-8229-2cc01fe93c6f	2026-11-08 21:43:15.695751+00	\N	SI-32
+4b97a125-b373-4594-90e0-52c0ff5f8cb9	2026-11-08	46ff676e-30cb-49e1-901b-f714a0c05ed1	bb6ec8ae-b1af-4181-90b3-f13405f372a1	23500	0	payment	5c7e6d3b-b3de-4aa8-9a02-71498a713a5c	2026-11-08 21:44:54.662433+00	\N	CRV-43
+2b115238-f723-406c-b294-59f4c992c10f	2026-11-08	50e275b8-01bb-44a7-9443-8cedb5646dd7	bb6ec8ae-b1af-4181-90b3-f13405f372a1	0	23500	payment	5c7e6d3b-b3de-4aa8-9a02-71498a713a5c	2026-11-08 21:44:54.662433+00	\N	CRV-43
+2ed4fb89-391b-43db-824d-e38f0cb54993	2026-11-10	c1279a3f-8815-4485-b393-96778ef5a521	\N	20000	0	payment	2d5a7fb6-53af-48ad-8c9d-5d38d19ea822	2026-11-10 18:21:42.674066+00	Adeel,guriya,zaiba	CPV-56
+4e3e47b2-4ae1-4752-a9e6-5a9012869a39	2026-11-10	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	20000	payment	2d5a7fb6-53af-48ad-8c9d-5d38d19ea822	2026-11-10 18:21:42.674066+00	Adeel,guriya,zaiba	CPV-56
+c3dd98a7-b7da-4e49-af04-f2d484923cd8	2026-11-10	04c19961-b817-440f-a92f-492ea308ea29	\N	15000	0	payment	734ec97e-4a56-4675-8e94-82eac625c3e8	2026-11-10 18:22:09.425469+00	Petrol 	CPV-57
+3ab9a686-6f54-45b0-9776-222cc4013a13	2026-11-10	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	0	15000	payment	734ec97e-4a56-4675-8e94-82eac625c3e8	2026-11-10 18:22:09.425469+00	Petrol 	CPV-57
+d81aa3db-aeb0-4009-8555-66069d7910b2	2026-11-12	690fa205-be66-4b6c-8ea4-3372e54692bc	8275f744-f561-4852-b850-203de549895c	91390.0	0	invoice	4b5b3e99-db1d-4431-891e-0fe2da629613	2026-11-12 11:04:19.584974+00	\N	SI-33
+00246e99-8fa7-41b9-8c64-9bbb056ed0d5	2026-11-12	b414cafa-9164-4c44-a264-fb62a28206c1	8275f744-f561-4852-b850-203de549895c	0	91390.0	invoice	4b5b3e99-db1d-4431-891e-0fe2da629613	2026-11-12 11:04:19.584974+00	\N	SI-33
 \.
 
 
@@ -2740,6 +2827,20 @@ b24c34cd-405c-4ee5-bbaa-2775d52a95e6	2026-10-13	3df7c6fc-b219-4436-99c4-4caba186
 93299a0d-05ce-448b-ac03-93aa5c8724e0	2026-10-12	\N	payment	300000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Ghar pa lgy 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-12 19:42:16.886602+00	CPV-49	\N	1aea2139-d6a1-4581-b421-04dee3bb2234	\N
 da63ae71-c4a0-42a6-83f0-adc6256c1d7f	2026-10-12	\N	payment	200000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Shadi ky mamlat	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-12 19:43:04.294678+00	CPV-50	\N	1aea2139-d6a1-4581-b421-04dee3bb2234	\N
 9264bdf8-23a7-4aa0-b4ce-5aff255d65e5	2026-10-12	1cbc3bf5-99fb-4e0f-98a6-7ab4ba1a85ac	receipt	300000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Invoice chq	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-12 19:47:16.798833+00	CRV-35	\N	\N	\N
+734ec97e-4a56-4675-8e94-82eac625c3e8	2026-11-10	\N	payment	15000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Petrol 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-10 18:22:09.425469+00	CPV-57	\N	04c19961-b817-440f-a92f-492ea308ea29	\N
+91dac65b-1389-4dfb-b7c0-c23d95e910dd	2026-10-16	\N	payment	350000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Ghr pa lga 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-16 20:09:49.32456+00	CPV-52	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+63537d92-7d8e-49e6-a256-264848d14416	2026-10-16	\N	payment	300000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Mama ko dia shadi ka lia 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-10-16 20:10:26.204061+00	CPV-53	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+b86e8225-d894-4486-8c13-b921ebe62a72	2026-10-29	a24d7d03-9ff9-43ec-8d90-d864f1f53e7c	receipt	100000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Chq Rec Shahid Javed Sports 	posted	\N	\N	3b485a4c-5dcb-4a33-885c-7a9f62427783	2026-10-29 20:55:20.469329+00	CRV-36	\N	\N	\N
+03afb003-2e5a-4804-b8ee-c0a9bc26d245	2026-11-05	67ef9cf6-0e5a-464e-adb3-0badb476a7f0	receipt	170163	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Chq rec	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-05 19:23:37.01685+00	CRV-37	\N	\N	\N
+773178a6-9797-4a50-b3b8-fd845010994c	2026-11-05	\N	payment	15000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Petrol/bike sai krai /zamzam	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-05 19:24:23.496519+00	CPV-54	\N	5a6b672c-cf6a-40ed-96d6-1c683bf71b65	\N
+db1c1be9-d9fe-40ce-b7a0-040b479ec5fb	2026-11-05	\N	payment	5000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Zyba	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-05 19:26:46.286593+00	CPV-55	\N	c1279a3f-8815-4485-b393-96778ef5a521	\N
+220429f4-70d2-40f1-9af3-82c30d7c18b9	2026-11-01	cb109f23-d502-485d-992a-a41ed5da24b9	receipt	228754	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Online payment 	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-08 21:20:55.855625+00	CRV-38	\N	\N	\N
+1bc659af-10f8-4d82-819f-4128c1b03157	2026-10-31	635db2c3-1801-44a6-822a-cf1dbc116223	receipt	1717094	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-08 21:28:44.827323+00	CRV-39	\N	\N	\N
+5c51c43c-bc41-40d2-ae82-3393ee1e7c31	2026-11-08	258e6e99-919e-4ec0-aab5-4d8cd36fa1b7	receipt	69735	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-08 21:31:27.192631+00	CRV-40	\N	\N	\N
+d2ed7e89-2b72-4428-b2b3-f3bfff46bd60	2026-11-08	7c8ce4e5-42ba-4465-83ef-fa4a208fb5a8	receipt	200000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-08 21:32:05.242698+00	CRV-41	\N	\N	\N
+acaf6284-1218-4fb7-9085-936e3b615118	2026-11-08	8275f744-f561-4852-b850-203de549895c	receipt	96400	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-08 21:32:31.258456+00	CRV-42	\N	\N	\N
+5c7e6d3b-b3de-4aa8-9a02-71498a713a5c	2026-11-08	bb6ec8ae-b1af-4181-90b3-f13405f372a1	receipt	23500	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	\N	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-08 21:44:54.662433+00	CRV-43	\N	\N	\N
+2d5a7fb6-53af-48ad-8c9d-5d38d19ea822	2026-11-10	\N	payment	20000	cash	46ff676e-30cb-49e1-901b-f714a0c05ed1	\N	Adeel,guriya,zaiba	posted	\N	\N	e7399901-e484-46a3-95dc-60bc308f5426	2026-11-10 18:21:42.674066+00	CPV-56	\N	c1279a3f-8815-4485-b393-96778ef5a521	\N
 \.
 
 
@@ -2760,8 +2861,7 @@ e7399901-e484-46a3-95dc-60bc308f5426	faraz	Faraz Islam Butt	t	t	2026-08-02 21:45
 --
 
 COPY public.stock_movements (id, item_id, movement_date, quantity_in, quantity_out, unit, reference_type, reference_id, created_at) FROM stdin;
-6e35da24-728d-4645-86bc-db7d1d764fd0	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-08-17	500	0	KG	purchase_bill	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-17 22:22:14.92634+00
-3f28f007-52e9-4c19-b9ed-51663a172622	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-08-21	0	500	KG	void	aab8c3ef-5ba3-49dc-8859-05cb730c6ec7	2026-08-21 17:16:12.283392+00
+307e2bdb-5ae1-4a88-8d3c-acc5665520cd	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-31	0	3630.659	KG	sale_bill	a96bf594-c669-4c72-8229-2cc01fe93c6f	2026-11-08 21:43:15.695751+00
 ee43a43c-88ed-4cdb-b372-0e5a0ad413cd	bc16062b-8939-428a-8872-7a6d4313be26	2026-08-28	0	30	KG	sale_bill	2af26f0a-2772-4fbf-ada3-7fd24f412095	2026-08-28 05:44:42.006853+00
 16347a6a-f024-4312-b912-8c36571c9479	495d1db9-95b6-4be4-9268-226a56554d7a	2026-08-31	0	1600	PCS	sale_bill	42d4600a-20e0-4681-907a-42e33861d4bc	2026-08-31 20:49:09.925778+00
 23f9e9c6-da96-4035-a742-127df50e011a	f2fd52a8-be5e-469d-970a-4e53f9925494	2026-08-31	0	3	PCS	sale_bill	42d4600a-20e0-4681-907a-42e33861d4bc	2026-08-31 20:49:09.925778+00
@@ -2854,6 +2954,33 @@ a4005bb7-47ad-45cd-b95c-95807a898525	9183c9b2-6fd5-4057-a8aa-b5e264312127	2026-1
 c4cd17f5-5be9-447d-b463-d64bab11d113	9183c9b2-6fd5-4057-a8aa-b5e264312127	2026-10-14	0	190	PCS	sale_bill	19aa0891-41b1-486f-a91a-9905a9fe4377	2026-10-14 11:42:47.976772+00
 d240c243-b7ee-4ac6-b6cf-47fcdd010c0f	9183c9b2-6fd5-4057-a8aa-b5e264312127	2026-10-14	0	315	PCS	sale_bill	19aa0891-41b1-486f-a91a-9905a9fe4377	2026-10-14 11:42:47.976772+00
 60b10f04-b21c-40a8-8309-a53e22454ef3	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-14	0	2	KG	sale_bill	19aa0891-41b1-486f-a91a-9905a9fe4377	2026-10-14 11:42:47.976772+00
+ce3dab39-c989-4aeb-a01b-4d46a07489bd	bc16062b-8939-428a-8872-7a6d4313be26	2026-10-16	0	7200	PCS	sale_bill	f5b7e06f-e420-485c-9e70-d931f4ad369b	2026-10-16 21:26:13.157481+00
+b67453b3-6e74-44ca-927c-633bc8924cb3	bc16062b-8939-428a-8872-7a6d4313be26	2026-10-16	0	6700	PCS	sale_bill	f5b7e06f-e420-485c-9e70-d931f4ad369b	2026-10-16 21:26:13.157481+00
+cab5719a-a083-479e-aaff-0a2833f4e324	bc16062b-8939-428a-8872-7a6d4313be26	2026-10-19	0	30	KG	sale_bill	5317b669-4397-49db-9601-fc8659b39ded	2026-10-22 06:32:27.677955+00
+fffa9f43-46b5-45b1-bf6c-4fccf0f7d868	bc16062b-8939-428a-8872-7a6d4313be26	2026-10-19	0	60	KG	sale_bill	5317b669-4397-49db-9601-fc8659b39ded	2026-10-22 06:32:27.677955+00
+c4eca09a-81e8-4e04-9f92-a3ce77b1d286	bc16062b-8939-428a-8872-7a6d4313be26	2026-10-19	0	60	KG	sale_bill	5317b669-4397-49db-9601-fc8659b39ded	2026-10-22 06:32:27.677955+00
+585f850e-d53f-4889-bf2e-0dcc1b522e10	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-19	0	532.5	KG	sale_bill	1719e371-7967-4e87-8f44-e0a676f45f38	2026-10-23 08:12:19.283916+00
+3f78af93-c9ff-42ac-b2a7-88aade825234	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-19	0	528.6	KG	sale_bill	1719e371-7967-4e87-8f44-e0a676f45f38	2026-10-23 08:12:19.283916+00
+b7c20020-4acc-4493-ba74-4e7764f1d102	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-19	0	564.6	KG	sale_bill	1719e371-7967-4e87-8f44-e0a676f45f38	2026-10-23 08:12:19.283916+00
+a968c672-44d8-4d9d-bcc1-f81c8f5bcf2d	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-19	0	528.95	KG	sale_bill	1719e371-7967-4e87-8f44-e0a676f45f38	2026-10-23 08:12:19.283916+00
+917b7a03-235e-4a62-9846-3510307084d1	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-19	0	52.7	KG	sale_bill	1719e371-7967-4e87-8f44-e0a676f45f38	2026-10-23 08:12:19.283916+00
+2590e395-fb34-4fc5-af7d-ea5b5548b938	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-28	0	75	KG	sale_bill	48dcc972-f4be-432f-8584-60cbe7fb6637	2026-10-28 06:46:44.280907+00
+42a0fcec-c723-4c22-9558-bb5c1a56c893	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-28	0	75	KG	sale_bill	f5816ef7-4104-4882-b6a2-1910a197cd63	2026-10-28 06:47:17.352995+00
+d37e9c57-0c43-44af-826f-6da73b1849a4	5d2f70df-e0dc-4986-bcff-66fd4a5d4a90	2026-10-30	0	33.2	KG	sale_bill	700b5a80-bc0e-4798-8216-c35b7672f7a2	2026-10-30 11:46:39.154345+00
+e4252d10-d41e-4a9d-8eba-b9eb334df333	f0b49011-f712-47a3-80b9-b75a877ca300	2026-10-30	0	20.3	KG	sale_bill	700b5a80-bc0e-4798-8216-c35b7672f7a2	2026-10-30 11:46:39.154345+00
+7063589a-0af0-43fc-852a-90c83c714ca8	f0b49011-f712-47a3-80b9-b75a877ca300	2026-10-30	0	18.4	KG	sale_bill	700b5a80-bc0e-4798-8216-c35b7672f7a2	2026-10-30 11:46:39.154345+00
+7df898e7-df10-4cde-ad5f-287d77c4dfa9	f0b49011-f712-47a3-80b9-b75a877ca300	2026-10-30	0	18.3	KG	sale_bill	700b5a80-bc0e-4798-8216-c35b7672f7a2	2026-10-30 11:46:39.154345+00
+b3037e23-19c1-40b0-9369-031b9db2f214	f0b49011-f712-47a3-80b9-b75a877ca300	2026-11-12	0	18.5	KG	sale_bill	4b5b3e99-db1d-4431-891e-0fe2da629613	2026-11-12 11:04:19.584974+00
+341c14e7-6393-4e00-aa60-7c0e673d3535	5d2f70df-e0dc-4986-bcff-66fd4a5d4a90	2026-11-12	0	25.9	KG	sale_bill	4b5b3e99-db1d-4431-891e-0fe2da629613	2026-11-12 11:04:19.584974+00
+3401dca6-9a5a-4736-a913-0447f126bfc1	a4d88bd2-4cc5-46b6-8a5a-7320f8676507	2026-10-30	1	0	PCS	purchase_bill	ea59d196-d4d7-465a-ac20-2598ecbf8aed	2026-10-30 19:16:45.054789+00
+539174c7-e637-46f6-ab4f-ca85e302a145	4237b09a-1618-403a-9c21-18976904a79d	2026-10-30	1	0	PCS	purchase_bill	ea59d196-d4d7-465a-ac20-2598ecbf8aed	2026-10-30 19:16:45.054789+00
+a3105929-95f8-4b89-998c-97761ec3d8f3	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-30	125	0	PCS	purchase_bill	ea59d196-d4d7-465a-ac20-2598ecbf8aed	2026-10-30 19:16:45.054789+00
+bffa6eee-7c74-461c-b9ec-5d74aa3bee97	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-11-01	0	303.5	KG	sale_bill	4fbf8c0d-6e27-4907-8467-22ab4e3cb75d	2026-11-01 16:58:09.996181+00
+b0c4e24d-be5e-4676-953c-fe1f58ee8f36	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-11-01	0	192.35	KG	sale_bill	4fbf8c0d-6e27-4907-8467-22ab4e3cb75d	2026-11-01 16:58:09.996181+00
+d111cb20-30c1-4871-9b0d-7686eef4d080	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-31	0	178.65	KG	sale_bill	3e51ce13-561a-4576-a393-279132bead03	2026-11-04 04:55:21.477407+00
+1e0db227-147b-47be-b0c2-5ae1541972a6	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-31	0	183.05	KG	sale_bill	3e51ce13-561a-4576-a393-279132bead03	2026-11-04 04:55:21.477407+00
+b41ad6a0-f8b0-4c2c-9567-f0743d0f3c40	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-31	0	197.7	KG	sale_bill	3e51ce13-561a-4576-a393-279132bead03	2026-11-04 04:55:21.477407+00
+29a96009-8117-4aee-b6dc-14d29db7f242	7f06a687-636e-4f8a-b4be-8fb4d4090352	2026-10-31	0	241.35	KG	sale_bill	3e51ce13-561a-4576-a393-279132bead03	2026-11-04 04:55:21.477407+00
 \.
 
 
@@ -2875,14 +3002,14 @@ SELECT pg_catalog.setval('public.brv_seq', 1, false);
 -- Name: cpv_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.cpv_seq', 51, true);
+SELECT pg_catalog.setval('public.cpv_seq', 57, true);
 
 
 --
 -- Name: crv_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.crv_seq', 35, true);
+SELECT pg_catalog.setval('public.crv_seq', 43, true);
 
 
 --
@@ -2896,7 +3023,7 @@ SELECT pg_catalog.setval('public.jv_seq', 1, false);
 -- Name: purchase_invoice_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.purchase_invoice_seq', 4, true);
+SELECT pg_catalog.setval('public.purchase_invoice_seq', 6, true);
 
 
 --
@@ -2917,7 +3044,7 @@ SELECT pg_catalog.setval('public.purchase_return_seq', 1, false);
 -- Name: sale_invoice_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.sale_invoice_seq', 23, true);
+SELECT pg_catalog.setval('public.sale_invoice_seq', 33, true);
 
 
 --
@@ -3834,5 +3961,5 @@ ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict nPju4elT6CxEC3rUSQ0R033QDzoS7wnZppBYg3Llc4b8ULAvznpz0DnZY5bAhxZ
+\unrestrict P7EpEsKbvbRu53AxSfdcTcIZKADMJsgsCeQ4fKOeFfEczQUjSCTMXynLx4cfxy0
 
